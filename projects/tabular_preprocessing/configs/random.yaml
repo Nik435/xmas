@@ -1,0 +1,61 @@
+# Random search over the full space: the 81 architectures crossed with the stage-2 factors.
+#
+#   uv run python -m tabular_preprocessing.outer_loop configs/random.yaml --dry-run
+#   uv run python -m tabular_preprocessing.outer_loop configs/random.yaml
+#
+# Each active hyperparameter is drawn uniformly from its choices (a list) or range ({low, high});
+# inactive ones follow the concept's "active when" (role only at size 2, fb_E only with a planner,
+# fb_V only with a validator, no back edges and a routing only with the orchestrator on).
+
+name: random_search
+output_dir: runs/random_search
+repeats: 1
+
+optimizer:
+  name: random
+  n_trials: 30
+  seed: 0
+objective: mean_relative_improvement   # per task (score - identity) / |identity|, then the mean
+
+tasks:
+  - rel-f1/driver-dnf
+  - rel-f1/driver-top3
+
+architecture:
+  clean:
+    size: [1, 2, 3]
+    role: [planner, validator]
+    fb_E: [0, 1]
+    fb_V: [0, 1]
+  merge:
+    size: [1, 2, 3]
+    role: [planner, validator]
+    fb_E: [0, 1]
+    fb_V: [0, 1]
+
+factors:
+  orchestrator: [off, on]
+  orchestrator_routing: [ordered, free]
+  temperature: {low: 0.0, high: 1.0}     # a range: drawn uniformly
+  models:
+    default: gemma-4-31b-llmlb            # set yours; a list of mappings makes model types a choice
+  tool_description: [brief, detailed, examples]
+  autonomy: [fixed, bounded, free]
+  order: clean_first                      # decide with the pre-test
+  merge_fills_sample: [no, yes]
+
+budgets:
+  fixed:   {max_tool_rounds: 10, max_loops: 1, max_evaluations: 10, max_steps: 8}
+  bounded: {max_tool_rounds: 20, max_loops: 3, max_evaluations: 30, max_steps: 12}
+  free:    {max_tool_rounds: 50, max_loops: 6, max_evaluations: 100, max_steps: 24}
+
+run:
+  predictor: hist_gradient_boosting
+  max_rows: 10000
+  max_columns: 500
+  baseline: true
+  max_train_rows: null   # e.g. 50000: keep only the most recent training label rows (rel-stack, rel-hm)
+  retries: 2             # a run that fails on API errors is retried; if it still fails, the trial is redone later
+  parallel: 1            # runs of a trial at the same time
+  max_tokens: null       # stop the study after this many tokens
+  max_hours: null        # ... or after this many hours of runs

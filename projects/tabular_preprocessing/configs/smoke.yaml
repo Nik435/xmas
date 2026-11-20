@@ -1,0 +1,47 @@
+# Smoke test: the cheapest real run, to check that agents, tools and scoring work with a real LLM.
+# One architecture (a lone executor per group), one task, tight budgets.
+#
+#   uv run python -m tabular_preprocessing.outer_loop configs/smoke.yaml --dry-run
+#   uv run python -m tabular_preprocessing.outer_loop configs/smoke.yaml
+#   uv run python -m tabular_preprocessing.outer_loop configs/smoke.yaml --summary
+#
+# Then look at runs/smoke/runs/00001.json: the agents' answers, tool calls and the pipeline.
+# Next steps: codes: ["clean=PEV-VE|merge=PEV-VE"] (all roles, back edges), then orchestrator: on.
+
+name: smoke
+output_dir: runs/smoke
+repeats: 1
+
+optimizer:
+  name: grid
+objective: mean_relative_improvement   # per task (score - identity) / |identity|, then the mean
+
+tasks:
+  - rel-f1/driver-dnf
+
+architecture:
+  codes: ["clean=E|merge=E"]
+
+factors:
+  orchestrator: off
+  temperature: 0.25
+  models:
+    default: gemma-4-31b-llmlb   # set the model your endpoint serves
+  tool_description: detailed
+  autonomy: bounded
+  order: clean_first
+  merge_fills_sample: no
+
+budgets:
+  bounded: {max_tool_rounds: 15, max_loops: 2, max_evaluations: 10, max_steps: 8}
+
+run:
+  predictor: hist_gradient_boosting
+  max_rows: 10000
+  max_columns: 500
+  baseline: true
+  max_train_rows: null   # e.g. 50000: keep only the most recent training label rows (rel-stack, rel-hm)
+  retries: 2             # a run that fails on API errors is retried; if it still fails, the trial is redone later
+  parallel: 1            # runs of a trial at the same time
+  max_tokens: null       # stop the study after this many tokens
+  max_hours: null        # ... or after this many hours of runs

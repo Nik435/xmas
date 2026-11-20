@@ -1,0 +1,68 @@
+# Complete optimization test: 20 trials (random architectures of the 81) on 20 RelArena entity tasks
+# (all 21 of RelArena v1 except rel-amazon/item-ltv). On the cluster: cluster/optimization_job.sh.
+#
+#   python -m tabular_preprocessing.outer_loop configs/optimization_test.yaml --download   # once
+#   python -m tabular_preprocessing.outer_loop configs/optimization_test.yaml --dry-run
+
+name: optimization_test
+output_dir: runs/optimization_test
+repeats: 1
+
+optimizer:
+  name: random
+  n_trials: 20
+  seed: 0
+objective: mean_relative_improvement
+
+tasks:
+  - rel-amazon/user-churn
+  - rel-amazon/user-ltv
+  - rel-amazon/item-churn
+  - rel-avito/ad-ctr
+  - rel-avito/user-visits
+  - rel-avito/user-clicks
+  - rel-event/user-attendance
+  - rel-event/user-repeat
+  - rel-event/user-ignore
+  - rel-f1/driver-position
+  - rel-f1/driver-dnf
+  - rel-f1/driver-top3
+  - rel-hm/user-churn
+  - rel-hm/item-sales
+  - rel-stack/user-engagement
+  - rel-stack/post-votes
+  - rel-stack/user-badge
+  - rel-trial/study-outcome
+  - rel-trial/study-adverse
+  - rel-trial/site-success
+
+architecture:
+  clean:
+    size: [1, 2, 3]
+    role: [planner, validator]
+    fb_E: [0, 1]
+    fb_V: [0, 1]
+  merge:
+    size: [1, 2, 3]
+    role: [planner, validator]
+    fb_E: [0, 1]
+    fb_V: [0, 1]
+
+factors:
+  orchestrator: off
+  temperature: 0.25
+  models:
+    default: gemma-4-31b-llmlb
+  tool_description: detailed
+  autonomy: bounded
+  order: clean_first
+  merge_fills_sample: no
+
+run:
+  predictor: hist_gradient_boosting
+  max_rows: 10000
+  max_columns: 500
+  max_train_rows: 50000  # rel-hm and rel-stack have millions of label rows
+  baseline: true
+  retries: 2
+  parallel: 1

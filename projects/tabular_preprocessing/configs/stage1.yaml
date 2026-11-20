@@ -1,0 +1,88 @@
+# Stage 1 of the MAS architecture search for a pipeline modelled on TabFM-Auto:
+# every one of the 81 systems (grid), every further factor at its default.
+#
+#   uv run python -m tabular_preprocessing.outer_loop configs/stage1.yaml --dry-run    # the plan
+#   uv run python -m tabular_preprocessing.outer_loop configs/stage1.yaml --trials 1   # a first try
+#   uv run python -m tabular_preprocessing.outer_loop configs/stage1.yaml              # the study
+#   uv run python -m tabular_preprocessing.outer_loop configs/stage1.yaml --summary    # best first
+#
+# A single value is fixed; a list gives the choices; the optimizer searches them. An interrupted
+# study continues where it stopped (trials.jsonl and results.jsonl in output_dir).
+
+name: stage1
+output_dir: runs/stage1   # relative to the directory you run from
+repeats: 1
+
+# How the space is searched: grid (every candidate) or random (n_trials draws). A candidate is
+# evaluated on every task; its value is the mean improvement over the identity pipeline.
+optimizer:
+  name: grid
+  # n_trials: 10           # grid: all candidates if omitted
+  seed: 0
+objective: mean_relative_improvement   # per task (score - identity) / |identity|, then the mean
+
+# RelBench tasks, "<dataset>/<task>" (the task set of agentic-relational-ml).
+# Start small: every task multiplies the number of LLM runs by 81.
+tasks:
+  - rel-f1/driver-dnf
+  - rel-f1/driver-position
+  - rel-f1/driver-top3
+  # - rel-avito/ad-ctr
+  # - rel-avito/user-visits
+  # - rel-event/user-repeat
+  # - rel-event/user-ignore
+  # - rel-hm/user-churn
+  # - rel-stack/user-engagement
+  # - rel-trial/study-outcome
+
+# 1 · Architecture hyperparameters, per group (Clean, Merge): 9 x 9 = 81 systems.
+# Role chain Planner -> Executor -> Validator; the executor is always present; only the back
+# edges to the direct predecessor are free. Inactive values collapse, so this grid gives
+# exactly the 9 variants per group. Alternatively list systems directly:
+#   codes: ["clean=E|merge=E", "clean=PEV-EP-VE|merge=PE"]
+architecture:
+  clean:
+    size: [1, 2, 3]                  # number of agents in the group
+    role: [planner, validator]       # active when size = 2: which role is added to the executor
+    fb_E: [0, 1]                     # active when a planner is present: executor can return to the planner
+    fb_V: [0, 1]                     # active when a validator is present: validator can reject and return
+  merge:
+    size: [1, 2, 3]
+    role: [planner, validator]
+    fb_E: [0, 1]
+    fb_V: [0, 1]
+
+# 2 · Further hyperparameters. Stage 1: all at their default. Stage 2: give a factor several
+# levels as a list (e.g. temperature: [0, 0.5, 1]) and narrow the architecture to a subset.
+factors:
+  orchestrator: off                  # on | off -- on: the orchestrator decides after every turn who works next
+  orchestrator_routing: ordered      # ordered | free -- ordered: the second group starts only after the
+                                     #   first group's executor has worked once (only active when on)
+  temperature: 0.25                  # e.g. 0 / 0.5 / 1; null sends none (reasoning models)
+  models:                            # one model (homogeneous) or per role: P, E, V, C fall back to default
+    default: gemma-4-31b-llmlb       # the model agentic-relational-ml used; set yours
+    # P: ...
+    # E: ...
+    # V: ...
+  tool_description: detailed         # brief | detailed | examples
+  autonomy: bounded                  # fixed | bounded | free  (limits: see budgets)
+  order: clean_first                 # clean_first | merge_first -- decide with the pre-test
+  merge_fills_sample: no             # yes: Merge also fills sample() (selection and stratification only)
+
+# What each autonomy level allows per run.
+# max_steps: agent turns the orchestrator may delegate (only with orchestrator: on).
+budgets:
+  fixed:   {max_tool_rounds: 10, max_loops: 1, max_evaluations: 10, max_steps: 8}
+  bounded: {max_tool_rounds: 20, max_loops: 3, max_evaluations: 30, max_steps: 12}
+  free:    {max_tool_rounds: 50, max_loops: 6, max_evaluations: 100, max_steps: 24}
+
+run:
+  predictor: hist_gradient_boosting  # the fixed predictor (still open: TabFM, TabPFN, LightGBM)
+  max_rows: 10000                    # most rows per context view
+  max_columns: 500                   # feature budget
+  baseline: true                     # also score the identity pipeline in every run (needed by the objective)
+  max_train_rows: null               # e.g. 50000: keep only the most recent training label rows (rel-stack, rel-hm)
+  retries: 2                         # a run that fails on API errors is retried; if it still fails, the trial is redone later
+  parallel: 1                        # runs of a trial at the same time
+  max_tokens: null                   # stop the study after this many tokens
+  max_hours: null                    # ... or after this many hours of runs

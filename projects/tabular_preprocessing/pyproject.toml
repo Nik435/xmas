@@ -1,0 +1,51 @@
+[project]
+name = "tabular-preprocessing"
+version = "0.1.0"
+description = "A relational pipeline modelled on TabFM-Auto, filled by a multi-agent system built on xmas."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "xmas",
+  "pandas>=2.2.2",
+  "numpy>=1.26.0,<3.0.0",
+  "scikit-learn>=1.5",
+  "duckdb>=1.0",
+  # RelBench tasks through RelArena's own splits (as in agentic-relational-ml)
+  "relarena>=0.1.0",
+  "relbench==2.1.2",
+]
+
+# xmas is not on PyPI; use the checkout this project lives in, editable.
+[tool.uv.sources]
+xmas = { path = "../..", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Flat layout: this folder is the package itself. The wheel takes only the package
+# files and places them under tabular_preprocessing/; the editable install puts the
+# parent folder (projects/) on the path, so `import tabular_preprocessing` finds this one.
+[tool.hatch.build.targets.wheel]
+only-include = ["__init__.py", "inner_loop", "outer_loop"]
+sources = { "" = "tabular_preprocessing/" }
+
+[tool.hatch.build]
+dev-mode-dirs = [".."]
+
+[dependency-groups]
+dev = ["pytest>=8.3", "ruff>=0.16.9"]
+
+[tool.ruff]
+extend = "../../pyproject.toml"
+src = ["..", "tests"]
+
+[tool.ruff.lint.extend-per-file-ignores]
+"tests/**/*.py" = ["D100", "D103", "D104", "ARG001", "ARG002", "ARG005"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tabular_preprocessing", "xmas"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"

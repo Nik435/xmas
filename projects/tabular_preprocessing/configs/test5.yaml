@@ -1,0 +1,49 @@
+# Test run of the outer loop: 5 trials (random architectures of the 81) on the three rel-f1 tasks.
+#
+#   uv run python -m tabular_preprocessing.outer_loop configs/test5.yaml
+#   uv run python -m tabular_preprocessing.outer_loop configs/test5.yaml --summary
+
+name: test5
+output_dir: runs/test5
+repeats: 1
+
+optimizer:
+  name: random
+  n_trials: 5
+  seed: 0
+objective: mean_relative_improvement
+
+tasks:
+  - rel-f1/driver-dnf
+  - rel-f1/driver-top3
+  - rel-f1/driver-position
+
+architecture:
+  clean:
+    size: [1, 2, 3]
+    role: [planner, validator]
+    fb_E: [0, 1]
+    fb_V: [0, 1]
+  merge:
+    size: [1, 2, 3]
+    role: [planner, validator]
+    fb_E: [0, 1]
+    fb_V: [0, 1]
+
+factors:
+  orchestrator: off
+  temperature: 0.25
+  models:
+    default: gemma-4-31b-llmlb
+  tool_description: detailed
+  autonomy: bounded
+  order: clean_first
+  merge_fills_sample: no
+
+run:
+  predictor: hist_gradient_boosting
+  max_rows: 10000
+  max_columns: 500
+  baseline: true
+  retries: 2
+  parallel: 1

@@ -1,0 +1,38 @@
+# Single-agent comparison for test5: one executor per group (clean=E|merge=E), same settings, 2 repeats.
+#
+#   uv run python -m tabular_preprocessing.outer_loop configs/test5_single.yaml
+#   uv run python -m tabular_preprocessing.outer_loop configs/test5_single.yaml --summary
+
+name: test5_single
+output_dir: runs/test5_single
+repeats: 2
+
+optimizer:
+  name: grid
+objective: mean_relative_improvement
+
+tasks:
+  - rel-f1/driver-dnf
+  - rel-f1/driver-top3
+  - rel-f1/driver-position
+
+architecture:
+  codes: ["clean=E|merge=E"]
+
+factors:
+  orchestrator: off
+  temperature: 0.25
+  models:
+    default: gemma-4-31b-llmlb
+  tool_description: detailed
+  autonomy: bounded
+  order: clean_first
+  merge_fills_sample: no
+
+run:
+  predictor: hist_gradient_boosting
+  max_rows: 10000
+  max_columns: 500
+  baseline: true
+  retries: 2
+  parallel: 1
