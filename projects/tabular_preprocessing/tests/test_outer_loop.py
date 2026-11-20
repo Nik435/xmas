@@ -5,11 +5,12 @@ import random
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 import yaml
 
 from conftest import TeamLLM
-from tabular_preprocessing import Architecture, Pipeline, RelationalTask
+from tabular_preprocessing import Architecture, Evaluation, Pipeline, RelationalTask, evaluate
 from tabular_preprocessing.inner_loop.agents import AGENT_TYPES, CLEANING_CODER, Team
 from tabular_preprocessing.inner_loop.tools import Toolbox, Workspace, filling_tools
 from tabular_preprocessing.outer_loop import (
@@ -26,6 +27,7 @@ from tabular_preprocessing.outer_loop import (
     summarize,
 )
 from tabular_preprocessing.outer_loop.cli import main
+from tabular_preprocessing.outer_loop.report import baselines, compare, entity_table_pipeline
 from tabular_preprocessing.outer_loop.study import StudyAbortedError, merge_shards, shard_of
 from xmas.errors import XmasError
 from xmas.tools import LocalTools
@@ -412,6 +414,62 @@ def test_final_evaluation_reapplies_the_best_pipelines_to_the_test_split(task: R
     assert json.loads(lines[0])["score"] is not None
 
 
+def fake_dfs(task: RelationalTask, split: str, factory: Any, max_rows: int) -> Evaluation:
+    # a stand-in for RDBLearn's features (they need RelBench): the rows only, as dfs gets them
+    assert task.db == {}
+    return evaluate(Pipeline.identity(), task, factory, max_rows)
+
+
+def test_baselines_score_fixed_pipelines_once_per_task(task: RelationalTask, tmp_path: Path) -> None:
+    cfg = config(output_dir=str(tmp_path / "b"))
+    loads: list[str] = []
+
+    def loader(d: str, t: str) -> RelationalTask:
+        loads.append(t)
+        return task
+
+    table = baselines(cfg, task_loader=loader, test_loader=loader, log=lambda _: None, dfs=fake_dfs)
+    assert len(table) == 6  # val and test x identity, entity_table and dfs
+    val = table[table["split"] == "val"].set_index("baseline")
+    assert val.loc["entity_table", "n_features"] == 2  # drivers.nationality and the time column; keys stay hidden
+    assert val.loc["identity", "relative_improvement"] == 0
+    assert val.loc["dfs", "score"] == val.loc["identity", "score"]
+    assert entity_table_pipeline(task).merge[0].params["columns"] == ["nationality"]
+    baselines(cfg, task_loader=loader, test_loader=loader, log=lambda _: None, dfs=fake_dfs)  # nothing again
+    assert loads == ["driver-good", "driver-good"]
+
+
+def test_a_failing_dfs_keeps_the_other_baselines(task: RelationalTask, tmp_path: Path) -> None:
+    def broken(*args: Any) -> Evaluation:
+        raise RuntimeError("no relbench here")
+
+    cfg = config(output_dir=str(tmp_path / "f"))
+    table = baselines(cfg, task_loader=lambda d, t: task, test_loader=lambda d, t: task, log=lambda _: None, dfs=broken)
+    scores = table[table["split"] == "val"].set_index("baseline")["score"]
+    assert pd.isna(scores["dfs"]) and not pd.isna(scores["identity"])
+
+
+def test_compare_puts_systems_and_every_baseline_side_by_side(task: RelationalTask, tmp_path: Path) -> None:
+    cfg = config(output_dir=str(tmp_path / "c"), architecture={"codes": ["clean=E|merge=E", "solo"]})
+    study(cfg, task)
+    baselines(cfg, task_loader=lambda d, t: task, test_loader=lambda d, t: task, log=lambda _: None, dfs=fake_dfs)
+    final_evaluation(cfg, top=2, task_loader=lambda d, t: task, log=lambda _: None)
+    row = compare(cfg).iloc[0]
+    assert row["metric"] == "roc_auc"
+    assert {"identity", "entity_table", "dfs", "mas_mean", "mas_selected", "solo"} <= set(row.index)
+    assert row["mas_mean"] == row["mas_selected"]  # one architecture besides solo
+
+
+def test_effects_leave_out_the_single_agent_baseline(task: RelationalTask, tmp_path: Path) -> None:
+    cfg = config(
+        output_dir=str(tmp_path / "solo"), architecture={"codes": ["clean=E|merge=E", "clean=PEV|merge=EV-VE", "solo"]}
+    )
+    study(cfg, task)
+    assert len(summarize(cfg)) == 3
+    table = effects(cfg)
+    assert table.set_index(["hyperparameter", "level"])["trials"].groupby(level=0).sum().eq(2).all()
+
+
 def test_effects_and_stage2_export(task: RelationalTask, tmp_path: Path) -> None:
     cfg = config(output_dir=str(tmp_path / "x"))
     study(cfg, task)
@@ -454,3 +512,12 @@ def test_a_random_study_shards_the_same_candidates_in_every_job() -> None:
     assert [c.key for c in shard_of(cfg, 2, 3)[1].candidates] == [c.key for c in jobs[1]]  # deterministic
     with pytest.raises(ValueError, match=r"numbered 1\.\.3"):
         shard_of(cfg, 4, 3)
+
+
+def test_tabpfn_v2_is_a_predictor_choice_and_weights_can_be_fetched() -> None:
+    from tabular_preprocessing.outer_loop.config import PREDICTORS, fetch_predictor
+
+    assert config(run={"predictor": "tabpfn_v2"}).predictor == "tabpfn_v2"
+    with pytest.raises(ConfigError, match="unknown"):
+        config(run={"predictor": "tabpfn_v9"})
+    fetch_predictor(PREDICTORS["hist_gradient_boosting"])  # the same call fits TabPFN once on the login node

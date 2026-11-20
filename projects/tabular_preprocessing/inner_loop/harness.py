@@ -54,6 +54,32 @@ def default_model(task_type: TaskType, **kwargs: Any) -> Any:
     return HistGradientBoostingRegressor(categorical_features="from_dtype", random_state=0, **kwargs)
 
 
+TABPFN_PREDICT_ROWS = 8192  # rows per prediction batch: TabPFN's default (32,768) can exceed GPU memory
+
+
+def tabpfn_v2_model(task_type: TaskType, **kwargs: Any) -> Any:
+    """TabPFN v2, the tabular foundation model RDBLearn uses by default; on a GPU if there is one.
+
+    Fit on at most ``max_rows`` rows (10,000, TabPFN v2's pretraining limit, as in RDBLearn). It
+    reads the same frames as the gradient boosting: numbers, pandas categoricals, missing values.
+    The weights download on first use (no login for v2). Prior Labs License: see the tabpfn package.
+    """
+    import torch
+    from tabpfn import TabPFNClassifier, TabPFNRegressor
+    from tabpfn.constants import ModelVersion
+    from tabpfn.settings import settings
+
+    settings.tabpfn.max_batched_test_rows = TABPFN_PREDICT_ROWS
+    estimator = TabPFNClassifier if task_type == "classification" else TabPFNRegressor
+    return estimator.create_default_for_version(
+        ModelVersion.V2,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        random_state=0,
+        ignore_pretraining_limits=True,
+        **kwargs,
+    )
+
+
 @dataclass(frozen=True)
 class StageRecord:
     """What one call did.

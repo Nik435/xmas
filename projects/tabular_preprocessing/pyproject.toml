@@ -13,6 +13,9 @@ dependencies = [
   # RelBench tasks through RelArena's own splits (as in agentic-relational-ml)
   "relarena>=0.1.0",
   "relbench==2.1.2",
+  # RDBLearn's feature builder (Deep Feature Synthesis), for the `dfs` baseline
+  "relarena-core[dfs]",
+  "tabpfn>=8",
 ]
 
 # xmas is not on PyPI; use the checkout this project lives in, editable.

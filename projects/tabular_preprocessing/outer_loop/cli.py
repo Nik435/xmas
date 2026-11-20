@@ -6,9 +6,12 @@ python -m tabular_preprocessing.outer_loop CONFIG --trials 1         # a first t
 python -m tabular_preprocessing.outer_loop CONFIG                    # the study (continues where it stopped)
 python -m tabular_preprocessing.outer_loop CONFIG --summary          # the trials, best first
 python -m tabular_preprocessing.outer_loop CONFIG --effects          # mean value per hyperparameter level
+python -m tabular_preprocessing.outer_loop CONFIG --baselines        # fixed pipelines, no agent: the references
+python -m tabular_preprocessing.outer_loop CONFIG --compare          # test scores: systems vs every baseline
 python -m tabular_preprocessing.outer_loop CONFIG --final 5          # the best 5 on the held-out test split
 python -m tabular_preprocessing.outer_loop CONFIG --export-stage2 5 configs/stage2.yaml
 python -m tabular_preprocessing.outer_loop CONFIG --shard 3/20             # one job of a cluster array
+python -m tabular_preprocessing.outer_loop CONFIG --shard 3/20 --final 1   # its test scores, in the shard
 python -m tabular_preprocessing.outer_loop CONFIG --merge                  # combine the shards
 """
 
@@ -20,9 +23,9 @@ import random
 import pandas as pd
 
 from tabular_preprocessing.inner_loop.data import download_relbench_task
-from tabular_preprocessing.outer_loop.config import ExperimentConfig
-from tabular_preprocessing.outer_loop.report import effects, export_stage2, final_evaluation, plan
-from tabular_preprocessing.outer_loop.study import _optimizer, merge_shards, n_trials_of, run_study, summarize
+from tabular_preprocessing.outer_loop.config import PREDICTORS, ExperimentConfig, fetch_predictor
+from tabular_preprocessing.outer_loop.report import baselines, compare, effects, export_stage2, final_evaluation, plan
+from tabular_preprocessing.outer_loop.study import _optimizer, merge_shards, n_trials_of, run_study, shard_of, summarize
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -33,6 +36,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--trials", type=int, help="run at most this many new trials")
     parser.add_argument("--summary", action="store_true", help="print the trials so far, best first")
     parser.add_argument("--effects", action="store_true", help="print the mean value per hyperparameter level")
+    parser.add_argument("--baselines", action="store_true", help="score the fixed baseline pipelines on every task")
+    parser.add_argument("--compare", action="store_true", help="per task: test scores of systems and baselines")
     parser.add_argument("--final", type=int, metavar="K", help="evaluate the best K on the held-out test split")
     parser.add_argument("--export-stage2", nargs=2, metavar=("K", "PATH"), help="write a stage-2 config of the best K")
     parser.add_argument("--shard", metavar="I/N", help="run only shard I of N (cluster job arrays), into shards/I-of-N")
@@ -45,12 +50,22 @@ def main(argv: list[str] | None = None) -> None:
             for name in config.tasks:
                 print(f"Downloading {name} ...", flush=True)
                 download_relbench_task(*name.split("/"))
+            if config.predictor != "hist_gradient_boosting":  # e.g. TabPFN's weights, for nodes without internet
+                print(f"Downloading the weights of {config.predictor} ...", flush=True)
+                fetch_predictor(PREDICTORS[config.predictor])
             print("Done.")
         elif args.summary:
             print(summarize(config).to_string(index=False))
         elif args.effects:
             print(effects(config).to_string(index=False))
+        elif args.baselines:
+            print(baselines(config).round(4).to_string(index=False))
+        elif args.compare:
+            print(compare(config).round(4).to_string(index=False))
         elif args.final is not None:
+            if args.shard:  # the shard's own trials, into its folder
+                i, n = (int(x) for x in args.shard.split("/"))
+                config, _ = shard_of(config, i, n)
             print(final_evaluation(config, top=args.final).to_string(index=False))
         elif args.merge:
             merge_shards(config)

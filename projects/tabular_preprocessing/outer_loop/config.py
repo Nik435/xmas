@@ -29,10 +29,12 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pandas as pd
 import yaml
 
 from tabular_preprocessing.inner_loop.architecture import Architecture, GroupArchitecture
-from tabular_preprocessing.inner_loop.harness import ModelFactory, default_model
+from tabular_preprocessing.inner_loop.harness import ModelFactory, default_model, tabpfn_v2_model
 from tabular_preprocessing.inner_loop.orchestrated import ROUTING
 from tabular_preprocessing.inner_loop.pipeline import DESCRIPTION_LEVELS
 
@@ -53,8 +55,16 @@ FACTOR_NAMES: tuple[str, ...] = (
     "merge_fills_sample",
 )
 
-# the fixed predictor, chosen by name; add TabPFN / LightGBM / TabFM here once decided
-PREDICTORS: dict[str, ModelFactory] = {"hist_gradient_boosting": default_model}
+# the fixed predictor, chosen by name: the same for every system and every baseline
+PREDICTORS: dict[str, ModelFactory] = {"hist_gradient_boosting": default_model, "tabpfn_v2": tabpfn_v2_model}
+
+
+def fetch_predictor(factory: ModelFactory) -> None:
+    """Fit the predictor once on a few rows, so weights it downloads on first use are cached."""
+    rng = np.random.default_rng(0)
+    x = pd.DataFrame({"a": rng.normal(size=40), "b": rng.normal(size=40)})
+    factory("classification").fit(x, (x["a"] > 0).astype(int))
+    factory("regression").fit(x, x["b"])
 
 
 class ConfigError(ValueError):

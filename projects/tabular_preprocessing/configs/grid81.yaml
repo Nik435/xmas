@@ -1,0 +1,135 @@
+# All 81 architectures of stage 1 plus the single-agent baseline (solo), 3 repeats each, on 10
+# RelArena entity tasks (5 datasets; rel-hm and rel-stack left out: too big, and rel-hm crashed).
+# No optimization: a grid that evaluates every architecture once (x 3 repeats).
+# Every further factor stays at its stage-1 default. Predictor for every system and every baseline:
+# the fast gradient boosting, 10,000 training rows per fit (tabpfn_v2 is the option for a GPU).
+# On the cluster, everything at once (82 architecture jobs, the baselines, the report afterwards):
+#   bash cluster/start_grid.sh
+# Tasks run in this order inside each job, the biggest database (rel-event) last.
+#
+#   python -m tabular_preprocessing.outer_loop configs/grid81.yaml --download    # once
+#   python -m tabular_preprocessing.outer_loop configs/grid81.yaml --baselines   # references, no LLM
+
+name: grid81
+output_dir: runs/grid81
+repeats: 3
+
+optimizer:
+  name: grid
+objective: mean_relative_improvement
+
+tasks:  # 10 of RelArena's 20: per dataset the tasks that separated architectures in optimization_test
+  - rel-f1/driver-dnf            # classification
+  - rel-f1/driver-top3           # classification
+  - rel-f1/driver-position       # regression
+  - rel-amazon/item-churn        # classification
+  - rel-avito/ad-ctr             # regression
+  - rel-avito/user-visits        # classification
+  - rel-trial/study-outcome      # classification
+  - rel-trial/site-success       # regression
+  - rel-event/user-repeat        # classification
+  - rel-event/user-ignore        # classification
+
+architecture:
+  codes:  # the 81 systems of stage 1, then the single agent that fills every slot alone
+    - "clean=E|merge=E"
+    - "clean=E|merge=PE"
+    - "clean=E|merge=PE-EP"
+    - "clean=E|merge=EV"
+    - "clean=E|merge=EV-VE"
+    - "clean=E|merge=PEV"
+    - "clean=E|merge=PEV-VE"
+    - "clean=E|merge=PEV-EP"
+    - "clean=E|merge=PEV-EP-VE"
+    - "clean=PE|merge=E"
+    - "clean=PE|merge=PE"
+    - "clean=PE|merge=PE-EP"
+    - "clean=PE|merge=EV"
+    - "clean=PE|merge=EV-VE"
+    - "clean=PE|merge=PEV"
+    - "clean=PE|merge=PEV-VE"
+    - "clean=PE|merge=PEV-EP"
+    - "clean=PE|merge=PEV-EP-VE"
+    - "clean=PE-EP|merge=E"
+    - "clean=PE-EP|merge=PE"
+    - "clean=PE-EP|merge=PE-EP"
+    - "clean=PE-EP|merge=EV"
+    - "clean=PE-EP|merge=EV-VE"
+    - "clean=PE-EP|merge=PEV"
+    - "clean=PE-EP|merge=PEV-VE"
+    - "clean=PE-EP|merge=PEV-EP"
+    - "clean=PE-EP|merge=PEV-EP-VE"
+    - "clean=EV|merge=E"
+    - "clean=EV|merge=PE"
+    - "clean=EV|merge=PE-EP"
+    - "clean=EV|merge=EV"
+    - "clean=EV|merge=EV-VE"
+    - "clean=EV|merge=PEV"
+    - "clean=EV|merge=PEV-VE"
+    - "clean=EV|merge=PEV-EP"
+    - "clean=EV|merge=PEV-EP-VE"
+    - "clean=EV-VE|merge=E"
+    - "clean=EV-VE|merge=PE"
+    - "clean=EV-VE|merge=PE-EP"
+    - "clean=EV-VE|merge=EV"
+    - "clean=EV-VE|merge=EV-VE"
+    - "clean=EV-VE|merge=PEV"
+    - "clean=EV-VE|merge=PEV-VE"
+    - "clean=EV-VE|merge=PEV-EP"
+    - "clean=EV-VE|merge=PEV-EP-VE"
+    - "clean=PEV|merge=E"
+    - "clean=PEV|merge=PE"
+    - "clean=PEV|merge=PE-EP"
+    - "clean=PEV|merge=EV"
+    - "clean=PEV|merge=EV-VE"
+    - "clean=PEV|merge=PEV"
+    - "clean=PEV|merge=PEV-VE"
+    - "clean=PEV|merge=PEV-EP"
+    - "clean=PEV|merge=PEV-EP-VE"
+    - "clean=PEV-VE|merge=E"
+    - "clean=PEV-VE|merge=PE"
+    - "clean=PEV-VE|merge=PE-EP"
+    - "clean=PEV-VE|merge=EV"
+    - "clean=PEV-VE|merge=EV-VE"
+    - "clean=PEV-VE|merge=PEV"
+    - "clean=PEV-VE|merge=PEV-VE"
+    - "clean=PEV-VE|merge=PEV-EP"
+    - "clean=PEV-VE|merge=PEV-EP-VE"
+    - "clean=PEV-EP|merge=E"
+    - "clean=PEV-EP|merge=PE"
+    - "clean=PEV-EP|merge=PE-EP"
+    - "clean=PEV-EP|merge=EV"
+    - "clean=PEV-EP|merge=EV-VE"
+    - "clean=PEV-EP|merge=PEV"
+    - "clean=PEV-EP|merge=PEV-VE"
+    - "clean=PEV-EP|merge=PEV-EP"
+    - "clean=PEV-EP|merge=PEV-EP-VE"
+    - "clean=PEV-EP-VE|merge=E"
+    - "clean=PEV-EP-VE|merge=PE"
+    - "clean=PEV-EP-VE|merge=PE-EP"
+    - "clean=PEV-EP-VE|merge=EV"
+    - "clean=PEV-EP-VE|merge=EV-VE"
+    - "clean=PEV-EP-VE|merge=PEV"
+    - "clean=PEV-EP-VE|merge=PEV-VE"
+    - "clean=PEV-EP-VE|merge=PEV-EP"
+    - "clean=PEV-EP-VE|merge=PEV-EP-VE"
+    - "solo"
+
+factors:
+  orchestrator: off
+  temperature: 0.25
+  models:
+    default: gemma-4-31b-llmlb
+  tool_description: detailed
+  autonomy: bounded
+  order: clean_first
+  merge_fills_sample: no
+
+run:
+  predictor: hist_gradient_boosting  # tabpfn_v2: RDBLearn's model, about 1 min per fit without a GPU
+  max_rows: 10000  # rows per fit
+  max_columns: 500
+  max_train_rows: 50000  # the most recent label rows (rel-event and rel-avito have many)
+  baseline: true
+  retries: 2
+  parallel: 1

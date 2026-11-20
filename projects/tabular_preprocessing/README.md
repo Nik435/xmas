@@ -46,8 +46,10 @@ tabular_preprocessing/
 │   ├── random.yaml      # random search over architectures and the stage-2 factors
 │   ├── smoke.yaml       # the cheapest real run: one architecture, one task
 │   ├── smoke_multi.yaml # one architecture on the three rel-f1 tasks
-│   └── optimization_test.yaml # complete test: random, 20 trials x 20 RelArena tasks
-├── cluster/             # SLURM: test_job.sh (smoke run), optimization_job.sh (20-job array)
+│   ├── optimization_test.yaml # complete test: random, 20 trials x 20 RelArena tasks
+│   ├── grid81.yaml      # all 81 architectures + solo, 3 repeats, 10 tasks
+│   └── smoke_tabpfn.yaml # the smoke test with TabPFN v2: checks the GPU setup
+├── cluster/             # SLURM: test_job.sh, optimization_job.sh, grid_job.sh + start_grid.sh (the grid81 study)
 └── tests/
 ```
 
@@ -220,7 +222,35 @@ mkdir -p log
 sbatch cluster/test_job.sh                                          # smoke test, one run
 sbatch cluster/optimization_job.sh                                  # array 1-20: one trial each
 sbatch -a 0 --dependency=afterany:JOBID cluster/optimization_job.sh # merge, summary, effects, final
+
+# all 81 architectures + solo + the baselines (configs/grid81.yaml), in one go: 82 architecture
+# jobs (at most 20 at once), the baselines job alongside, the report job when all have ended
+bash cluster/start_grid.sh
 ```
+
+**Predictor.** `run.predictor` is the same for every system and every baseline:
+`hist_gradient_boosting` (fast, CPU) or `tabpfn_v2` (TabPFN v2, RDBLearn's default, 10,000 rows
+per fit; about 1 min per fit on a CPU, so it needs a GPU). `--download`
+also fetches TabPFN's weights, for compute nodes without internet. TabPFN is under the Prior Labs
+License.
+
+```bash
+sbatch -p ml_gpu-rtx2080 --gres=gpu:1 cluster/test_job.sh configs/smoke_tabpfn.yaml   # check the GPU setup
+```
+
+`--baselines` scores references without any agent on every task, on the validation and the test
+split, **all with the study's predictor, training rows and sampling**, so only the features differ:
+
+| baseline | features |
+|---|---|
+| `identity` | the task table only (the timestamp; keys stay hidden) |
+| `entity_table` | plus every column of the entity's own row (RelBench's LightGBM recipe) |
+| `dfs` | RDBLearn's features from RelArena: Deep Feature Synthesis at depth 2, past-label aggregates, time-until-cutoff diffs, entity key and cutoff calendar |
+
+The single-agent `solo` runs as a normal candidate; `--effects` leaves it out. `--compare` shows per
+task, on the test split, every baseline next to `mas_mean` (every architecture and repeat),
+`mas_selected` (the architecture with the best search value) and `solo`. AUC is higher-is-better;
+MAE is shown positive, lower-is-better, as on the RelArena leaderboard.
 
 - **Continuing:** resubmitting the same configuration continues it. Every shard skips what it
   already finished, so time limits, preemption (`--requeue`) and API outages lose at most the runs
