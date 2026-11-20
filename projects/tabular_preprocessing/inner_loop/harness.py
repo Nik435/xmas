@@ -22,6 +22,7 @@ pipelines can be compared with :meth:`Pipeline.identity`.
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -167,7 +168,8 @@ def build_tables(
     x_test = test[[task.time_col]].copy()
     y_train = train[task.target_col]
 
-    con = duckdb.connect(":memory:")
+    # as many threads as this process may use (a cluster job's cores, not the whole node)
+    con = duckdb.connect(":memory:", config={"threads": len(os.sched_getaffinity(0))})
     try:
         for name, table in db.items():
             con.register(name, table.df)

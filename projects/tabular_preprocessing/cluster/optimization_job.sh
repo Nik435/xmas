@@ -16,6 +16,7 @@ echo "Started at $(date) on $(hostname), job $SLURM_ARRAY_JOB_ID.$SLURM_ARRAY_TA
 export RELBENCH_CACHE_DIR="$(ws_find tabulardata-mas)/relbench"   # data in the workspace jehled-tabulardata-mas
 set -a; source ../../.env; set +a                                  # XMAS_BASE_URL, XMAS_API_KEY (xmas/.env)
 export PYTHONUNBUFFERED=1
+export PYTHONFAULTHANDLER=1                                        # on a crash (segfault), print where it happened
 CONFIG=configs/optimization_test.yaml
 if [ "$SLURM_ARRAY_TASK_ID" -eq 0 ]; then
     .venv/bin/python -m tabular_preprocessing.outer_loop $CONFIG --merge
@@ -25,4 +26,6 @@ if [ "$SLURM_ARRAY_TASK_ID" -eq 0 ]; then
 else
     .venv/bin/python -m tabular_preprocessing.outer_loop $CONFIG --shard $SLURM_ARRAY_TASK_ID/20
 fi
-echo "Finished at $(date)"
+status=$?
+echo "Finished at $(date) with exit code $status"
+exit $status                                                       # so sacct shows FAILED when Python crashed
