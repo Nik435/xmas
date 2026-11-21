@@ -142,7 +142,7 @@ def test_the_single_agent_baseline_fills_every_slot_alone(task: RelationalTask) 
     assert [a.name for a in agents] == ["solo_executor"]
     assert edges == [(START, "solo_executor"), ("solo_executor", END)]
     tools = agents[0].tools
-    assert len(tools) == 5 + 6 + 3 + 4  # filling, profiling, schema, validation
+    assert len(tools) == 6 + 6 + 3 + 4  # filling (with list_features), profiling, schema, validation
     assert all(t.startswith("solo_") for t in tools)
     steps = {"solo": [{"stage": s["stage"], "step": s["step"]} for s in [CLEAN_STEP, *MERGE_STEPS]]}
     result = run_inner_loop(solo, task, TeamLLM(steps))

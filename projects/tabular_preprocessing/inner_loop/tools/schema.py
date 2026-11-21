@@ -1,8 +1,9 @@
 """Tool set: understand the schema (the Schema & Join Analyst; an executor without planner inherits it).
 
 What the merge and feature plan needs: which tables the merge functions can reach
-from the entity table, how many rows a 1:n relation has per entity and per time
-window, and how the tables' times relate to the label times. Everything is
+from the entity table (directly, as 1:1 tables, or two steps away through ``via``),
+how many rows a 1:n relation has per entity, how much of it the rows to predict
+still see, and how the tables' times relate to the label times. Everything is
 measured on the cleaned database (after the draft's clean slot), because that is
 what merging will read.
 """
@@ -27,6 +28,7 @@ def schema_tools(workspace: Workspace, group: str) -> list[Tool]:
         ``<group>_list_relations``, ``<group>_inspect_relation`` and ``<group>_time_overview``.
     """
     task = workspace.tool_task  # the training rows, split by time: the validation rows stay unseen
+    predict = workspace.task.val  # the rows the run is finally scored on: only their ids and times are read
 
     def db() -> Database:
         cleaned, _ = workspace.cleaned()
@@ -49,32 +51,58 @@ def schema_tools(workspace: Workspace, group: str) -> list[Tool]:
         ]
         out.append(bullets(lookups))
         out.append("aggregate (1:n, tables whose foreign key points to the entity table):")
-        children = []
+        children, single, paths = [], [], []
         for name, t in tables.items():
             for fk, parent in (t.fkeys or {}).items():
                 if parent != task.entity_table:
                     continue
                 numeric = [c for c in t.df.columns if c not in t.keys and pd.api.types.is_numeric_dtype(t.df[c])]
+                other = [c for c in t.df.columns if c not in t.keys and c not in numeric]
                 per = t.df.groupby(fk).size()
                 time = f"time column {t.time_col}" if t.time_col else "NO time column (rows are not time-filtered)"
                 children.append(
                     f"table={name}, fk_column={fk}: {len(t.df)} rows, median {fmt(float(per.median()))} per entity, "
-                    f"{time}; numeric columns: {', '.join(numeric) or 'none'}"
+                    f"{time}; numeric columns: {', '.join(numeric) or 'none'}; categorical/text columns (mode, "
+                    f"count_by, where): {', '.join(other) or 'none'}"
                 )
+                if per.max() <= 1:
+                    single.append(f"table={name}, fk_column={fk}: columns {', '.join(numeric + other) or 'none'}")
+                for link, target in (t.fkeys or {}).items():
+                    if link != fk and target != task.entity_table and tables[target].pkey:
+                        cols = [c for c in tables[target].df.columns if c not in tables[target].keys]
+                        paths.append(f"table={target}, via={name}, fk_column={fk}: columns {', '.join(cols) or 'none'}")
         out.append(bullets(children))
-        unreachable = [n for n in tables if n != task.entity_table and not _touches(tables, n, task.entity_table)]
+        if single:
+            out.append("child_columns (1:1, at most one row per entity: copy the columns):")
+            out.append(bullets(single))
+        if paths:
+            out.append(
+                "aggregate with via (two steps: the entity's rows in the via table, then the rows they point to):"
+            )
+            out.append(bullets(paths))
+        out.append(
+            f"target_history: the entity's own past labels ({task.target_col!r} of earlier label rows), "
+            "e.g. how often it was positive before or its last label."
+        )
+        reached = {p.split(",", 1)[0].removeprefix("table=") for p in paths}
+        unreachable = [
+            n
+            for n in tables
+            if n != task.entity_table and not _touches(tables, n, task.entity_table) and n not in reached
+        ]
         if unreachable:
             out.append(
-                "Not reachable with the merge functions (no direct key to or from the entity table): "
+                "Not reachable with the merge functions (no key to or from the entity table, nor through via): "
                 + ", ".join(unreachable)
             )
         return "\n".join(out)
 
     def inspect_relation(table: str, fk_column: str) -> str:
-        """How a 1:n table relates to the entity: rows per entity, coverage, time range, rows per time window.
+        """How a 1:n table relates to the entity: rows per entity, coverage, and how much of it the rows to predict see.
 
-        The windows (30, 90, 365 days, all history) show how many rows a label row sees before its
-        time, which is what aggregate with window_days would aggregate.
+        Compares the fitting rows with the rows the run is finally scored on: how many of the table's rows
+        a label row sees before its time, and how old the latest one is. The rows to predict lie after the
+        database's last rows, so they see older history; an aggregate is only as good as it is there.
 
         Args:
             table: The 1:n table.
@@ -99,32 +127,20 @@ def schema_tools(workspace: Workspace, group: str) -> list[Tool]:
             return "\n".join(out)
         times = pd.to_datetime(t.df[t.time_col])
         out.append(f"Time column {t.time_col}: {times.min().date()} to {times.max().date()}.")
-        # what a label row typically sees: a sample of train label rows, rows strictly before its time
-        sample = task.train.sample(n=min(300, len(task.train)), random_state=0)
         rows = t.df[[fk_column, t.time_col]].rename(columns={fk_column: "_e", t.time_col: "_t"})
-        joined = (
-            sample[[task.entity_col, task.time_col]]
-            .reset_index()
-            .merge(rows, left_on=task.entity_col, right_on="_e", how="left")
-        )
-        before = joined["_t"] < joined[task.time_col]
-        age = (joined[task.time_col] - joined["_t"]).dt.days
-        for window in (30, 90, 365, None):
-            mask = before & (age <= window) if window else before
-            counts = mask.groupby(joined["index"]).sum()
-            label = f"last {window} days" if window else "all history"
-            out.append(
-                f"{label}: a label row sees median {fmt(float(counts.median()))} rows, "
-                f"{pct(float((counts == 0).mean()))} see none"
-            )
+        for label, labels in (("fitting rows", task.train), ("rows to predict", predict)):
+            out.append(f"{label}: " + _seen(labels, rows, task.entity_col, task.time_col))
         return "\n".join(out)
 
     def time_overview() -> str:
         """The label times (fitting and scoring rows) next to every table's time range, and tables without time."""
         tr, va = pd.to_datetime(task.train[task.time_col]), pd.to_datetime(task.val[task.time_col])
+        final = pd.to_datetime(predict[task.time_col])
         out = [
             f"Label rows: fitting {tr.min().date()} to {tr.max().date()}, "
             f"scoring {va.min().date()} to {va.max().date()}.",
+            f"Rows the run is finally scored on: {final.min().date()} to {final.max().date()}; they can only see "
+            "the database's rows, which end where the tables' time ranges below end.",
             "Aggregates only see rows strictly before each label row's time.",
         ]
         lines = []
@@ -138,6 +154,20 @@ def schema_tools(workspace: Workspace, group: str) -> list[Tool]:
 
     fns = (list_relations, inspect_relation, time_overview)
     return [tool(name=f"{group}_{fn.__name__}")(fn) for fn in fns]
+
+
+def _seen(labels: pd.DataFrame, rows: pd.DataFrame, entity_col: str, time_col: str) -> str:
+    """What a sample of label rows sees of ``rows`` (``_e``, ``_t``): rows before its time, the latest one's age."""
+    sample = labels.sample(n=min(300, len(labels)), random_state=0)[[entity_col, time_col]].reset_index()
+    joined = sample.merge(rows, left_on=entity_col, right_on="_e", how="left")
+    before = joined["_t"] < joined[time_col]
+    counts = before.groupby(joined["index"]).sum()
+    age = (joined[time_col] - joined["_t"]).dt.days.where(before).groupby(joined["index"]).min()
+    latest = f"the latest is median {fmt(float(age.median()))} days old" if age.notna().any() else "none has any"
+    return (
+        f"a label row sees median {fmt(float(counts.median()))} rows, {pct(float((counts == 0).mean()))} see none; "
+        f"{latest}"
+    )
 
 
 def _touches(tables: Database, name: str, entity: str) -> bool:

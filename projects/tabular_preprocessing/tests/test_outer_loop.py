@@ -273,6 +273,8 @@ def test_a_grid_study_evaluates_every_candidate_and_resumes(task: RelationalTask
     assert Pipeline.from_dict(rows[0]["pipeline"]).merge[0].fn == "aggregate"
     detail = json.loads((out / rows[1]["detail"]).read_text())
     assert [step["agent"] for step in detail["trace"]][:2] == ["clean_executor", "clean_validator"]
+    calls = [c for step in detail["trace"] for c in step["tool_calls"]]
+    assert calls and all(0 < len(c["result"]) <= 500 for c in calls)  # the tools' replies are kept, shortened
     assert yaml.safe_load((out / "config.yaml").read_text())["name"] == "test"
 
     assert study(cfg, task) == []  # every trial done

@@ -2,7 +2,8 @@
 
 - ``check_pipeline``: the contracts, without fitting the predictor: does the pipeline
   run, how many rows does cleaning remove, are train and validation treated alike,
-  is the feature count within budget, which features are empty or constant.
+  is the feature count within budget, which features are empty or constant, and, as
+  errors, which features are empty for nearly all rows the run is finally scored on.
 - ``score_pipeline``: the validation score of the draft, next to the identity
   pipeline and to the draft without this group's slots (what the group added).
 - ``score_steps``: leave-one-out per step of the group's slots (what each step adds).
@@ -28,6 +29,7 @@ from tabular_preprocessing.inner_loop.tools.workspace import Scored, Workspace
 from xmas.tools import Tool, tool
 
 _LISTS = ("clean", "merge", "engineer", "postprocess")
+PREDICTION_EMPTY = 0.95  # a feature at least this empty on the rows to predict cannot help there
 
 
 def validation_tools(workspace: Workspace, group: str) -> list[Tool]:
@@ -89,6 +91,14 @@ def validation_tools(workspace: Workspace, group: str) -> list[Tool]:
                     f"{c}: missing in {pct(va.isna().mean())} of validation vs {pct(tr.isna().mean())} of train rows"
                 )
         out.append("Feature problems:\n" + bullets(problems))
+        errors = _empty_where_predicted(workspace)
+        if errors:
+            out.insert(
+                0,
+                "ERRORS, fix before you finish: these features are empty for nearly all rows the run is "
+                "finally scored on (those rows lie after the database's last rows), so they cannot help "
+                "there; the tool scores do not show this. Remove or replace their steps:\n" + bullets(errors),
+            )
         return "\n".join(out)
 
     def score_pipeline() -> str:
@@ -153,12 +163,21 @@ def validation_tools(workspace: Workspace, group: str) -> list[Tool]:
             return f"The draft fails: {error}"
         static = _static_prefixes(workspace.pipeline, task)
         untimed = {name for name, t in task.db.items() if t.time_col is None}
+        try:
+            predicted = workspace.prediction_missing()
+        except PipelineError:
+            predicted = {}
         lines = []
         for c in built.x_train.columns:
             tr, va = built.x_train[c], built.x_test[c]
             signal = _signal(tr, built.y_train, task.task_type)
-            line = f"{c}: missing {pct(float(tr.isna().mean()))}, signal {fmt(signal) if signal is not None else 'n/a'}"
+            line = (
+                f"{c}: missing {pct(float(tr.isna().mean()))} (rows to predict: {pct(predicted.get(str(c), 0.0))}), "
+                f"signal {fmt(signal) if signal is not None else 'n/a'}"
+            )
             flags = []
+            if predicted.get(str(c), 0.0) >= PREDICTION_EMPTY:
+                flags.append("EMPTY on the rows to predict: cannot help there, remove it")
             if signal is not None and (signal > 0.95 or (task.task_type == "classification" and signal < 0.05)):
                 flags.append("near-perfect signal: check for target leakage")
             if c.split(".", 1)[0] in static and "(" not in c:
@@ -225,3 +244,16 @@ def _signal(x: pd.Series, y: pd.Series, task_type: str) -> float | None:
             return None
         return float(roc_auc_score(y == np.sort(y.unique())[1], filled))
     return float(abs(filled.corr(y.astype(float), method="spearman")))
+
+
+def _empty_where_predicted(workspace: Workspace) -> list[str]:
+    """The draft's features that are at least :data:`PREDICTION_EMPTY` empty on the rows to predict."""
+    try:
+        missing = workspace.prediction_missing()
+    except PipelineError as error:
+        return [f"the pipeline does not run on the rows to predict: {error}"]
+    return [
+        f"{c}: missing for {pct(share)} of the rows to predict"
+        for c, share in missing.items()
+        if share >= PREDICTION_EMPTY
+    ]

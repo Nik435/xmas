@@ -56,6 +56,9 @@ class RelationalTask:
         task_type: ``"classification"`` or ``"regression"``.
         train: Label rows to fit on.
         val: Label rows to score on.
+        horizon: How far ahead a label looks: the label at time ``t`` describes ``(t, t + horizon]``
+            (RelBench's ``timedelta``). A past label is only known once its period is over, so
+            ``target_history`` uses it from ``t + horizon`` on. ``None``: from just after ``t``.
     """
 
     name: str
@@ -67,6 +70,7 @@ class RelationalTask:
     task_type: TaskType
     train: pd.DataFrame
     val: pd.DataFrame
+    horizon: pd.Timedelta | None = None
 
     def tool_task(self, holdout: float = 0.2) -> RelationalTask:
         """The task the agents' tools score on: the training rows split by time, the validation rows unseen.
@@ -192,4 +196,5 @@ def load_relbench_task(dataset: str, task: str, split: str = "inner") -> Relatio
         task_type="regression" if rb.task_type == RelBenchTaskType.REGRESSION else "classification",
         train=train.reset_index(drop=True),
         val=score.reset_index(drop=True),
+        horizon=pd.Timedelta(rb.timedelta) if getattr(rb, "timedelta", None) is not None else None,
     )

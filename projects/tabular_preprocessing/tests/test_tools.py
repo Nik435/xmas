@@ -39,7 +39,8 @@ def test_tool_names_carry_the_group_and_both_groups_fit_in_one_system(workspace:
         "clean_replace_step",
         "clean_remove_step",
     ]
-    assert len(index_tools([*clean, *merge])) == 10
+    assert [t.name for t in merge][2] == "merge_list_features"  # only groups that fill merge/engineer
+    assert len(index_tools([*clean, *merge])) == 11
 
 
 def test_the_schema_offers_only_the_groups_own_slots(clean: LocalTools, merge: LocalTools) -> None:
@@ -101,7 +102,7 @@ def test_replace_and_remove_by_number(workspace: Workspace, merge: LocalTools) -
     [
         ({"stage": "merge", "step": {"fn": "teleport"}}, "merge has no function 'teleport'"),
         ({"stage": "merge", "step": {"fn": "lookup", "fk_column": "teamId"}}, "needs parameters"),
-        ({"stage": "merge", "step": {"columns": ["x"]}}, "'fn' key"),
+        ({"stage": "merge", "step": {"columns": ["x"]}}, "'fn' names the function"),
         ({"stage": "merge", "step": AGGREGATE, "position": 5}, "position must be between 0 and 0"),
     ],
 )
@@ -179,3 +180,21 @@ def test_removing_a_step_a_later_step_needs_is_refused(workspace: Workspace, mer
     with pytest.raises(XmasError, match="Refused"):
         merge.call("merge_remove_step", {"stage": "merge", "index": 0})
     assert len(workspace.pipeline.merge) == 1
+
+
+def test_every_change_names_the_feature_columns_it_added_or_removed(merge: LocalTools) -> None:
+    out = merge.call("merge_add_step", {"stage": "merge", "step": AGGREGATE})
+    assert "New feature columns: results.count(), results.mean(points)" in out
+    out = merge.call(
+        "merge_add_step", {"stage": "engineer", "step": {"fn": "count_encode", "columns": ["results.count()"]}}
+    )
+    assert "New feature columns: results.count()_count" in out
+    out = merge.call("merge_remove_step", {"stage": "engineer", "index": 0})
+    assert "Removed feature columns: results.count()_count" in out
+
+
+def test_list_features_gives_the_exact_names(merge: LocalTools) -> None:
+    merge.call("merge_add_step", {"stage": "merge", "step": AGGREGATE})
+    out = merge.call("merge_list_features", {})
+    assert out.startswith("3 feature columns:")
+    assert "- results.mean(points)" in out

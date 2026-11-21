@@ -166,6 +166,7 @@ def build_tables(
     max_rows: int = 10_000,
     max_columns: int = 500,
     cleaned: tuple[Database, list[StageRecord]] | None = None,
+    history: pd.DataFrame | None = None,
 ) -> Tables:
     """Build the predictor's train and test tables from a pipeline: clean, merge, engineer, sample.
 
@@ -178,6 +179,9 @@ def build_tables(
         max_columns: Most feature columns the predictor may receive.
         cleaned: The result of :func:`clean_database` for this pipeline, if already known (a cache: the
             clean slot of a large database can take seconds, and many drafts share it).
+        history: The label rows whose labels merge functions may use as past labels (``target_history``);
+            ``train`` by default. A check on a sample of ``train`` passes all fitting rows here, so the
+            sampled rows see the past labels a real run would.
 
     Returns:
         The tables, the context views and the log.
@@ -193,17 +197,24 @@ def build_tables(
     x_train = train[[task.time_col]].copy()
     x_test = test[[task.time_col]].copy()
     y_train = train[task.target_col]
+    # the merge functions see the label rows without their target: the rows to predict may carry
+    # theirs (scoring needs it), and no merge function may read it. Past labels reach them only as
+    # ctx.labels, the fitting rows' labels.
+    seeds = [rows.drop(columns=[task.target_col], errors="ignore") for rows in (train, test)]
+    labels = (train if history is None else history)[[task.entity_col, task.time_col, task.target_col]]
 
     # as many threads as this process may use (a cluster job's cores, not the whole node)
     con = duckdb.connect(":memory:", config={"threads": len(os.sched_getaffinity(0))})
     try:
         for name, table in db.items():
             con.register(name, table.df)
-        ctx = MergeContext(db, con, task.entity_table, task.entity_col, task.time_col)
+        ctx = MergeContext(
+            db, con, task.entity_table, task.entity_col, task.time_col, labels, task.target_col, task.horizon
+        )
         for call in pipeline.merge:
             start = time.perf_counter()
-            new_train = _invoke("merge", call, ctx, train)
-            new_test = _invoke("merge", call, ctx, test)
+            new_train = _invoke("merge", call, ctx, seeds[0])
+            new_test = _invoke("merge", call, ctx, seeds[1])
             for new, seed in ((new_train, train), (new_test, test)):
                 if len(new) != len(seed) or not new.index.equals(seed.index):
                     raise PipelineError(f"merge/{call} must return exactly one row per label row.")

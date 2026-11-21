@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from conftest import DAY, T0
+from conftest import DAY, T0, with_licences
 from tabular_preprocessing import (
     REGISTRY,
     STAGES,
@@ -41,8 +41,9 @@ EXAMPLES: dict[str, dict[str, object]] = {
         "table": "results",
         "fk_column": "driverId",
         "aggregations": [{"op": "max", "column": "points"}],
-        "window_days": 30,
     },
+    "child_columns": {"table": "licences", "fk_column": "driverId", "columns": ["grade"]},
+    "target_history": {"ops": ["count", "mean", "last"]},
     "combine": {"a": "results.mean(points)", "b": "results.count()", "op": "div"},
     "group_stat": {"group": "drivers.nationality", "value": "results.mean(points)"},
     "count_encode": {"columns": ["drivers.nationality"]},
@@ -78,7 +79,8 @@ def test_every_function_has_an_example() -> None:
 def test_every_function_runs_inside_the_harness(task: RelationalTask, stage: str) -> None:
     regression = replace(task, task_type="regression")
     for fn in REGISTRY[stage]:
-        result = evaluate(pipeline_with(stage, fn), regression if fn == "clip_to_train_range" else task)
+        on = with_licences(regression if fn == "clip_to_train_range" else task)
+        result = evaluate(pipeline_with(stage, fn), on)
         assert np.isfinite(result.score), fn
 
 
@@ -99,23 +101,26 @@ def test_aggregate_sees_only_rows_strictly_before_the_label_time(task: Relationa
     pipeline = Pipeline.from_dict(
         {
             "merge": [
-                {"fn": "aggregate", "table": "results", "fk_column": "driverId", "aggregations": [{"op": "count"}]},
                 {
                     "fn": "aggregate",
                     "table": "results",
                     "fk_column": "driverId",
                     "aggregations": [{"op": "count"}, {"op": "time_since_last"}],
-                    "window_days": 10,
                 },
             ]
         }
     )
     out = _features(pipeline, task, seed)
-    assert list(out.columns) == ["date", "results.count()", "results.count()@10d", "results.time_since_last(date)@10d"]
+    assert list(out.columns) == ["date", "results.count()", "results.time_since_last(date)"]
     # races in weeks 0, 1, 2 are before; the race in week 3 is at the label time, so excluded
     assert out["results.count()"].tolist() == [3.0]
-    assert out["results.count()@10d"].tolist() == [1.0]
-    assert out["results.time_since_last(date)@10d"].tolist() == [7.0]
+    assert out["results.time_since_last(date)"].tolist() == [7.0]
+
+
+def test_aggregate_has_no_time_windows() -> None:
+    step = {"fn": "aggregate", "table": "results", "fk_column": "driverId", "aggregations": [{"op": "count"}]}
+    with pytest.raises(PipelineError, match="takes no parameters \\['window_days'\\]"):
+        Pipeline.from_dict({"merge": [{**step, "window_days": 30}]})
 
 
 def test_lookup_and_entity_columns_follow_the_keys(task: RelationalTask) -> None:
@@ -230,7 +235,9 @@ def test_options_describe_every_slot() -> None:
     options = Pipeline.options()
     assert list(options) == list(STAGES)
     assert options["clean"]["zero_as_missing"].startswith("(table: str, columns: list[str])")
-    assert "window_days: int | None = None" in options["merge"]["aggregate"]
+    assert "where: dict[str, list[typing.Any]] | None = None" in options["merge"]["aggregate"]
+    assert "via: str | None = None" in options["merge"]["aggregate"]
+    assert "window_days" not in options["merge"]["aggregate"]
 
 
 def test_describe_renders_the_schema(task: RelationalTask) -> None:
@@ -262,12 +269,11 @@ def _features(pipeline: Pipeline, task: RelationalTask, seed: pd.DataFrame) -> p
 
 
 def test_parameters_are_converted_to_their_declared_types() -> None:
-    # a model wrote window_days as text in the first real run; accepted steps must also run
-    step = {"fn": "aggregate", "table": "results", "fk_column": "driverId", "aggregations": [{"op": "count"}]}
-    pipeline = Pipeline.from_dict({"merge": [{**step, "window_days": "365"}]})
-    assert pipeline.merge[0].params["window_days"] == 365
-    with pytest.raises(PipelineError, match="parameter window_days='a year'"):
-        Pipeline.from_dict({"merge": [{**step, "window_days": "a year"}]})
+    # a model wrote a number as text in the first real run; accepted steps must also run
+    pipeline = Pipeline.from_dict({"sample": {"fn": "random_views", "n_views": "4"}})
+    assert pipeline.sample.params["n_views"] == 4
+    with pytest.raises(PipelineError, match="parameter n_views='four'"):
+        Pipeline.from_dict({"sample": {"fn": "random_views", "n_views": "four"}})
     with pytest.raises(PipelineError, match="parameter op='pow'"):
         Pipeline.from_dict({"engineer": [{"fn": "combine", "a": "x", "b": "y", "op": "pow"}]})
 

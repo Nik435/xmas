@@ -66,7 +66,7 @@ clean (per table) -> merge -> engineer -> sample -> predictor (fixed) -> postpro
 | Slot | Filled by | Signature | Functions |
 |---|---|---|---|
 | `clean` (list) | Clean | `(table df) -> df`, call names its `table` | `zero_as_missing`, `placeholder_as_missing`, `to_numeric`, `missing_indicators`, `drop_columns`, `drop_duplicate_rows` |
-| `merge` (list) | Merge | `(ctx, label rows) -> new columns` | `entity_columns`, `lookup` (n:1), `aggregate` (1:n, optional `window_days`) |
+| `merge` (list) | Merge | `(ctx, label rows) -> new columns` | `entity_columns`, `lookup` (n:1), `child_columns` (1:1), `aggregate` (1:n over all history; `where`, `count_by`, `mode`; two steps with `via`), `target_history` (the entity's past labels) |
 | `engineer` (list) | Merge | `(X_train, y_train, X_test) -> (X_train, X_test)` | `combine`, `group_stat`, `count_encode`, `log_transform`, `datetime_parts`, `drop_features` |
 | `sample` (one) | default (Merge, if that factor is on) | `(X_train, y_train, X_test, max_rows) -> [row indices]` | `full`, `random_views`, `recent`, `stratified_views`, `oversample_minority` |
 | `postprocess` (list) | to be decided | `(pred, y_train, X_test) -> pred` | `prior_shift`, `temperature`, `clip_to_train_range` |
@@ -88,7 +88,6 @@ pipeline = Pipeline.from_dict(
                 "table": "results",
                 "fk_column": "driverId",
                 "aggregations": [{"op": "count"}, {"op": "mean", "column": "points"}],
-                "window_days": 365,
             },
         ],
     }
@@ -371,9 +370,9 @@ their sets.
 
 | Set | For | Tools | What they give |
 |---|---|---|---|
-| `filling` | executors | `list_functions`, `show_pipeline`, `add_step`, `replace_step`, `remove_step` | edit the group's own slots; every edit is checked against the library at once |
+| `filling` | executors | `list_functions`, `show_pipeline`, `list_features` (merge/engineer groups), `add_step`, `replace_step`, `remove_step` | edit the group's own slots; every edit is checked against the library at once and answers with the feature columns it added or removed |
 | `profiling` | Data Profiler | `list_tables`, `profile_table`, `profile_column`, `find_placeholders`, `target_distribution`, `sample_rows` | types, missing values, placeholder candidates, numbers stored as text, duplicates, the target; with `after_cleaning=true`, as the draft's clean steps leave them |
-| `schema` | Schema & Join Analyst | `list_relations`, `inspect_relation`, `time_overview` | what entity_columns / lookup / aggregate can reach, rows per entity and per time window before a label time, time ranges |
+| `schema` | Schema & Join Analyst | `list_relations`, `inspect_relation`, `time_overview` | what entity_columns / lookup / child_columns / aggregate (also via) / target_history can reach, rows per entity, what the fitting rows and the rows to predict see before their time, time ranges |
 | `validation` | validators, orchestrator | `check_pipeline`, `score_pipeline`, `score_steps`, `feature_report` | contracts without fitting (free); the score against identity and without the group's slots; leave-one-out per step; per-feature signal with leakage and drift flags |
 | `orchestration` | Orchestrator | `status`, `submit` | the overview of the run, and submitting the pipeline |
 

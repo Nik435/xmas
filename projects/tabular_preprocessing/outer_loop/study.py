@@ -57,6 +57,7 @@ INFRA = re.compile(
     re.IGNORECASE,
 )
 MAX_OUTAGES = 3  # trials in a row with API errors before the study stops
+TOOL_RESULT_CHARS = 500  # of each tool reply kept in a run's detail: enough to see errors and warnings
 AUTH = re.compile(r"\b40[13]\b|Authentication|PermissionDenied|invalid api key", re.IGNORECASE)
 
 
@@ -473,7 +474,15 @@ def _detail(row: dict[str, Any], result: InnerLoopResult) -> dict[str, Any]:
             {
                 "agent": r.agent,
                 "output": next(iter(r.outputs.values()), ""),
-                "tool_calls": [{"tool": c.tool, "arguments": c.arguments, "failed": c.failed} for c in r.tool_calls],
+                "tool_calls": [
+                    {
+                        "tool": c.tool,
+                        "arguments": c.arguments,
+                        "failed": c.failed,
+                        "result": c.result[:TOOL_RESULT_CHARS],
+                    }
+                    for c in r.tool_calls
+                ],
                 "tokens": {"input": r.usage.input_tokens, "output": r.usage.output_tokens},
             }
             for r in result.trace.records

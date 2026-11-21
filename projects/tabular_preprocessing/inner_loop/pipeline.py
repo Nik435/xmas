@@ -12,10 +12,9 @@ to fixed functions from the library::
                 "table": "results",
                 "fk_column": "driverId",
                 "aggregations": [{"op": "count"}, {"op": "mean", "column": "points"}],
-                "window_days": 365,
             },
         ],
-        "engineer": [{"fn": "log_transform", "columns": ["results.count()@365d"]}],
+        "engineer": [{"fn": "log_transform", "columns": ["results.count()"]}],
         "sample": {"fn": "full"},
         "postprocess": [],
         "model_kwargs": {},
@@ -68,9 +67,26 @@ class Call:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], stage: str) -> Call:
-        """Read a call from ``{"fn": ..., **params}``; for ``clean``, ``table`` is the call's own field."""
+        """Read a call from ``{"fn": ..., **params}``; for ``clean``, ``table`` is the call's own field.
+
+        Two forms models often write instead are read as meant: ``{"function": ..., **params}`` and the
+        function name as the only key, ``{"aggregate": {...params}}``.
+        """
+        if isinstance(data, dict) and "fn" not in data:
+            if "function" in data:
+                data = {"fn": data["function"], **{k: v for k, v in data.items() if k != "function"}}
+            elif (
+                len(data) == 1
+                and next(iter(data)) in REGISTRY.get(stage, {})
+                and isinstance(next(iter(data.values())), dict)
+            ):
+                ((name, params_),) = data.items()
+                data = {"fn": name, **params_}
         if not isinstance(data, dict) or "fn" not in data:
-            raise PipelineError(f"A {stage} call must be an object with an 'fn' key, got {data!r}.")
+            raise PipelineError(
+                f"A {stage} step must be one object: 'fn' names the function and its parameters sit next to it, "
+                f"e.g. {json.dumps(_example(stage))}. Got {data!r}."
+            )
         params = {k: v for k, v in data.items() if k != "fn"}
         table = params.pop("table", None) if stage == "clean" else None
         return cls(data["fn"], params, table)
@@ -183,6 +199,14 @@ class Pipeline:
         lines.insert(3, f"{'sample':12s} {self.sample}")
         lines.append(f"{'model_kwargs':12s} {self.model_kwargs or '-'}")
         return "\n".join(lines)
+
+
+def _example(stage: str) -> dict[str, Any]:
+    """A correct step for a slot, for error messages: its first function with an example call."""
+    for name in REGISTRY.get(stage, {}):
+        if name in EXAMPLES:
+            return {"fn": name, **EXAMPLES[name]}
+    return {"fn": "..."}
 
 
 def _check(stage: str, call: Call) -> Call:

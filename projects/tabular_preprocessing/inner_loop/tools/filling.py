@@ -9,7 +9,9 @@ Whether the pipeline *helps* (scores, leakage) is the validation tool set's job.
 Every change is also tried at once: the draft with the change is built on a small sample of
 label rows (a dry run with the real harness). A change that would break the pipeline (an unknown
 aggregation, a column another step removed, a misspelled merged column, removing a step a later
-step needs) is refused with the reason, and the draft stays as it was.
+step needs) is refused with the reason, and the draft stays as it was. A change that runs is
+answered with the feature columns it added or removed, by their exact names, so engineer steps
+can refer to them; ``list_features`` lists all of the draft's columns.
 
 One call to :func:`filling_tools` gives one group its tools, names prefixed with
 the group (``clean_add_step``, ``merge_add_step``, ...), so both groups' tools
@@ -21,7 +23,6 @@ can sit in one system without clashing.
 from collections.abc import Sequence
 from typing import Any, Literal
 
-from tabular_preprocessing.inner_loop.harness import build_tables
 from tabular_preprocessing.inner_loop.library import STAGES
 from tabular_preprocessing.inner_loop.pipeline import Pipeline, PipelineError
 from tabular_preprocessing.inner_loop.tools.workspace import MERGE_SAMPLE_FUNCTIONS, Edit, Workspace
@@ -45,8 +46,8 @@ def filling_tools(workspace: Workspace, group: str, slots: Sequence[str] | None 
         slots: The slots this group may edit; defaults to :data:`GROUP_SLOTS`.
 
     Returns:
-        ``<group>_list_functions``, ``<group>_show_pipeline``, ``<group>_add_step``,
-        ``<group>_replace_step`` and ``<group>_remove_step``.
+        ``<group>_list_functions``, ``<group>_show_pipeline``, ``<group>_list_features`` (groups that
+        fill merge or engineer), ``<group>_add_step``, ``<group>_replace_step`` and ``<group>_remove_step``.
 
     Raises:
         ValueError: If the group has no default slots and none are given, or a slot is unknown.
@@ -78,6 +79,11 @@ def filling_tools(workspace: Workspace, group: str, slots: Sequence[str] | None 
         """The whole draft pipeline, every slot with its numbered steps."""
         return _render(workspace.pipeline, owned)
 
+    def list_features() -> str:
+        """The feature columns the draft builds now, by the exact names engineer steps refer to."""
+        columns = _features(workspace, workspace.pipeline)
+        return f"{len(columns)} feature columns:\n" + "\n".join(f"- {c}" for c in columns)
+
     def add_step(stage: str, step: dict[str, Any], position: int | None = None) -> str:
         """Add a step to a slot. For sample, which holds one step, this replaces it.
 
@@ -95,9 +101,11 @@ def filling_tools(workspace: Workspace, group: str, slots: Sequence[str] | None 
             steps = [step]
         else:
             steps.insert(at, step)
+        before = _features(workspace, workspace.pipeline)
         added = _commit(workspace, stage, steps, at)
         workspace.edits.append(Edit(f"{group}_add_step", stage, "add", added))
-        return f"Added to {stage}: {added}\n{_render_slot(workspace.pipeline, stage)}"
+        change = _change(before, _features(workspace, workspace.pipeline))
+        return f"Added to {stage}: {added}\n{change}{_render_slot(workspace.pipeline, stage)}"
 
     def replace_step(stage: str, index: int, step: dict[str, Any]) -> str:
         """Replace one step of a slot by a new one.
@@ -112,9 +120,11 @@ def filling_tools(workspace: Workspace, group: str, slots: Sequence[str] | None 
         if stage == "sample":
             _check_sample(workspace, step)
         steps[index] = step
+        before = _features(workspace, workspace.pipeline)
         new = _commit(workspace, stage, steps, index)
         workspace.edits.append(Edit(f"{group}_replace_step", stage, "replace", new))
-        return f"Replaced {stage}[{index}] with {new}\n{_render_slot(workspace.pipeline, stage)}"
+        change = _change(before, _features(workspace, workspace.pipeline))
+        return f"Replaced {stage}[{index}] with {new}\n{change}{_render_slot(workspace.pipeline, stage)}"
 
     def remove_step(stage: str, index: int) -> str:
         """Remove one step of a slot. Removing the sample step restores the default (full).
@@ -130,12 +140,17 @@ def filling_tools(workspace: Workspace, group: str, slots: Sequence[str] | None 
             steps = [{"fn": "full"}]
         else:
             del steps[index]
+        before = _features(workspace, workspace.pipeline)
         _commit(workspace, stage, steps, None)
         workspace.edits.append(Edit(f"{group}_remove_step", stage, "remove", removed))
-        return f"Removed {stage}[{index}]: {removed}\n{_render_slot(workspace.pipeline, stage)}"
+        change = _change(before, _features(workspace, workspace.pipeline))
+        return f"Removed {stage}[{index}]: {removed}\n{change}{_render_slot(workspace.pipeline, stage)}"
 
+    fns = (list_functions, show_pipeline, add_step, replace_step, remove_step)
+    if {"merge", "engineer"} & set(owned):  # merged column names matter to whoever writes engineer steps
+        fns = (list_functions, show_pipeline, list_features, add_step, replace_step, remove_step)
     tools = []
-    for fn in (list_functions, show_pipeline, add_step, replace_step, remove_step):
+    for fn in fns:
         if "stage" in fn.__annotations__:
             fn.__annotations__["stage"] = stage_type
             fn.__doc__ = (fn.__doc__ or "").replace("stage: The slot.", f"stage: The slot ({slot_list}).")
@@ -182,20 +197,33 @@ def _commit(workspace: Workspace, stage: str, steps: list[dict[str, Any]], at: i
     return "" if at is None else str(_calls(workspace.pipeline, stage)[at])
 
 
-DRY_RUN_ROWS = 200  # label rows the dry run builds features for
-
-
 def _dry_run(workspace: Workspace, draft: Pipeline) -> None:
     """Build the draft's tables on a small sample of the tools' rows; raise if any step breaks."""
-    task = workspace.tool_task
-    train = task.train.sample(n=min(DRY_RUN_ROWS, len(task.train)), random_state=0)
-    test = task.val.sample(n=min(DRY_RUN_ROWS // 2, len(task.val)), random_state=0)
+    _features(workspace, draft, refused=True)
+
+
+def _features(workspace: Workspace, pipeline: Pipeline, refused: bool = False) -> tuple[str, ...]:
+    """The pipeline's feature columns (a cached dry run); a failure is worded as a refused change."""
     try:
-        build_tables(draft, task, train, test, workspace.max_rows, workspace.max_columns, workspace.cleaned(draft))
+        return workspace.features(pipeline)
     except PipelineError as error:
+        if not refused:
+            raise
         raise PipelineError(
             f"Refused: with this change the pipeline would not run: {error} The draft is unchanged."
         ) from None
+
+
+def _change(before: tuple[str, ...], after: tuple[str, ...]) -> str:
+    """The feature columns a change added and removed, by name; empty if it changed none."""
+    added = [c for c in after if c not in before]
+    removed = [c for c in before if c not in after]
+    lines = []
+    if added:
+        lines.append("New feature columns: " + ", ".join(added))
+    if removed:
+        lines.append("Removed feature columns: " + ", ".join(removed))
+    return "".join(f"{line}\n" for line in lines)
 
 
 def _render_slot(pipeline: Pipeline, stage: str) -> str:

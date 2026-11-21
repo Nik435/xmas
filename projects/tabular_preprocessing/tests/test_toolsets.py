@@ -81,17 +81,22 @@ def test_schema_lists_what_the_merge_functions_can_reach(workspace: Workspace) -
     assert "entity_columns can take: teamId, nationality" in out
     assert "- fk_column=teamId -> teams: columns country" in out
     assert "- table=results, fk_column=driverId: 1800 rows, median 60 per entity, time column date" in out
-    assert "Not reachable with the merge functions (no direct key to or from the entity table): races" in out
+    # races are two steps away: results point to them
+    assert "- table=races, via=results, fk_column=driverId: columns" in out
+    assert "target_history: the entity's own past labels ('good' of earlier label rows)" in out
+    assert "Not reachable" not in out
 
 
-def test_schema_inspects_a_relation_per_time_window(workspace: Workspace) -> None:
+def test_schema_inspects_a_relation_for_fitting_rows_and_rows_to_predict(workspace: Workspace) -> None:
     out = tools(workspace, "merge", "schema").call(
         "merge_inspect_relation", {"table": "results", "fk_column": "driverId"}
     )
     assert "results via driverId: 1800 rows over 30 entities" in out
-    # races are weekly: a label row sees about 4 results in its last 30 days
-    assert "last 30 days: a label row sees median 4 rows" in out
-    assert "all history: a label row sees median" in out
+    assert "window" not in out and "last 30 days" not in out
+    # races are weekly, so the latest result is a week old for both
+    assert "fitting rows: a label row sees median" in out
+    assert "rows to predict: a label row sees median" in out
+    assert "the latest is median 7 days old" in out
 
 
 def test_schema_rejects_a_key_that_does_not_point_to_the_entity(workspace: Workspace) -> None:
@@ -159,12 +164,34 @@ def test_the_budget_stops_new_evaluations_but_not_cached_ones(task: RelationalTa
         v.call("merge_score_steps", {})  # a new draft is refused
 
 
+def test_features_empty_on_the_rows_to_predict_are_errors(task: RelationalTask) -> None:
+    # the rows to predict are new drivers: the database has nothing about them, though every tool score
+    # (on the training rows) sees full features
+    fresh = task.val.assign(driverId=task.val.driverId + 1000)
+    workspace = Workspace(RelationalTask(**{**task.__dict__, "val": fresh}))
+    workspace.pipeline = Pipeline.from_dict({"merge": [AGGREGATE]})
+    v = tools(workspace, "merge", "validation")
+    out = v.call("merge_check_pipeline", {})
+    assert out.startswith("ERRORS, fix before you finish")
+    assert "results.mean(points): missing for 100.0% of the rows to predict" in out
+    assert "results.count()" not in out.split("\n\n")[0].split("Runs:")[0]  # a count of 0 is a value
+    report = v.call("merge_feature_report", {})
+    assert "results.mean(points): missing 0.0% (rows to predict: 100.0%)" in report
+    assert "EMPTY on the rows to predict" in report
+    assert workspace.evaluations == 0  # free of budget
+
+
+def test_no_errors_when_the_rows_to_predict_have_features(workspace: Workspace) -> None:
+    workspace.pipeline = Pipeline.from_dict({"merge": [AGGREGATE]})
+    assert tools(workspace, "merge", "validation").call("merge_check_pipeline", {}).startswith("Runs:")
+
+
 def test_feature_report_flags_static_columns(workspace: Workspace) -> None:
     workspace.pipeline = Pipeline.from_dict(
         {"merge": [{"fn": "entity_columns", "columns": ["nationality"]}, AGGREGATE]}
     )
     out = tools(workspace, "merge", "validation").call("merge_feature_report", {})
-    assert "drivers.nationality: missing 0.0%, signal" in out
+    assert "drivers.nationality: missing 0.0% (rows to predict: 0.0%), signal" in out
     assert "static column" in out
     assert "results.mean(points): missing" in out
 
@@ -205,7 +232,8 @@ def test_a_full_system_offers_every_tool_once(task: RelationalTask) -> None:
     toolbox = Toolbox(Workspace(task))
     Architecture.from_code("clean=PEV-EP-VE|merge=PEV-EP-VE").agents(toolbox)
     names = [t.name for t in toolbox.tools()]
-    assert len(index_tools(toolbox.tools())) == len(names) == 2 * (5 + 4) + 6 + 3
+    # filling (merge also has list_features), validation, profiling, schema
+    assert len(index_tools(toolbox.tools())) == len(names) == 2 * (5 + 4) + 1 + 6 + 3
     assert {n.split("_", 1)[0] for n in names} == {"clean", "merge"}
 
 

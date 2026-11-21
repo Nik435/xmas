@@ -66,6 +66,21 @@ def task() -> RelationalTask:
     )
 
 
+def with_licences(task: RelationalTask) -> RelationalTask:
+    """The task plus a 1:1 table: one licence per driver, issued in week ``driverId``, grade ``driverId % 3``."""
+    n = len(task.db["drivers"].df)
+    licences = pd.DataFrame(
+        {
+            "licenceId": range(n),
+            "driverId": range(n),
+            "issued": [T0 + 7 * d * DAY for d in range(n)],
+            "grade": [d % 3 for d in range(n)],
+        }
+    )
+    db = {**task.db, "licences": Table(licences, "licenceId", {"driverId": "drivers"}, "issued")}
+    return RelationalTask(**{**task.__dict__, "db": db})
+
+
 class TeamLLM(BaseLLM):
     """A scripted model for whole systems: answers each agent by its role, from the prompt it gets.
 
