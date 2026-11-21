@@ -8,7 +8,7 @@
 #SBATCH -o log/%x.%A.%a.out            # STDOUT (the folder log must exist)
 #SBATCH -e log/%x.%A.%a.err            # STDERR
 #SBATCH -J mas-grid81                  # job name
-# One part of the grid81 study (configs/grid81.yaml). Start everything with cluster/start_grid.sh;
+# One part of a grid study ($CONFIG, configs/grid81.yaml by default). Start everything with cluster/start_grid.sh;
 # it submits this script three ways:
 #   (no argument)  array jobs 1-82: one architecture each, then its test scores (no LLM)
 #   baselines      identity, entity_table and dfs on every task (no LLM), alongside the architectures
@@ -18,7 +18,7 @@ export RELBENCH_CACHE_DIR="$(ws_find tabulardata-mas)/relbench"   # data in the 
 set -a; source ../../.env; set +a                                  # XMAS_BASE_URL, XMAS_API_KEY (xmas/.env)
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1                                        # on a crash (segfault), print where it happened
-CONFIG=configs/grid81.yaml
+CONFIG="${CONFIG:-configs/grid81.yaml}"                           # set by cluster/start_grid.sh
 RUN=".venv/bin/python -m tabular_preprocessing.outer_loop $CONFIG"
 case "$1" in
     baselines)
