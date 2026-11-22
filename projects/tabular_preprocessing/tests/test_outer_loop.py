@@ -275,6 +275,7 @@ def test_a_grid_study_evaluates_every_candidate_and_resumes(task: RelationalTask
     assert [step["agent"] for step in detail["trace"]][:2] == ["clean_executor", "clean_validator"]
     calls = [c for step in detail["trace"] for c in step["tool_calls"]]
     assert calls and all(0 < len(c["result"]) <= 500 for c in calls)  # the tools' replies are kept, shortened
+    assert rows[0]["dropped_features"] == []  # features left out for being empty on the rows to predict
     assert yaml.safe_load((out / "config.yaml").read_text())["name"] == "test"
 
     assert study(cfg, task) == []  # every trial done

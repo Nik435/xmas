@@ -102,7 +102,7 @@ def test_replace_and_remove_by_number(workspace: Workspace, merge: LocalTools) -
     [
         ({"stage": "merge", "step": {"fn": "teleport"}}, "merge has no function 'teleport'"),
         ({"stage": "merge", "step": {"fn": "lookup", "fk_column": "teamId"}}, "needs parameters"),
-        ({"stage": "merge", "step": {"columns": ["x"]}}, "'fn' names the function"),
+        ({"stage": "merge", "step": {"colums": ["x"]}}, "'fn' names the function"),
         ({"stage": "merge", "step": AGGREGATE, "position": 5}, "position must be between 0 and 0"),
     ],
 )
@@ -145,9 +145,9 @@ def test_unknown_groups_and_slots_are_rejected(workspace: Workspace) -> None:
 
 
 def test_an_unknown_aggregation_is_refused(workspace: Workspace, merge: LocalTools) -> None:
-    last = {**AGGREGATE, "aggregations": [{"op": "last", "column": "points"}]}
-    with pytest.raises(XmasError, match=r"Refused.*Unknown aggregation op 'last'"):
-        merge.call("merge_add_step", {"stage": "merge", "step": last})
+    median = {**AGGREGATE, "aggregations": [{"op": "median", "column": "points"}]}
+    with pytest.raises(XmasError, match=r"Refused.*Unknown aggregation op 'median'"):
+        merge.call("merge_add_step", {"stage": "merge", "step": median})
     assert workspace.pipeline.merge == []
     assert workspace.edits == []
 
@@ -198,3 +198,23 @@ def test_list_features_gives_the_exact_names(merge: LocalTools) -> None:
     out = merge.call("merge_list_features", {})
     assert out.startswith("3 feature columns:")
     assert "- results.mean(points)" in out
+
+
+# an executor sent back to revise its work often starts its plan over (3,801 refused steps in grid81_v2)
+
+
+def test_adding_a_step_the_draft_already_holds_changes_nothing(workspace: Workspace, merge: LocalTools) -> None:
+    merge.call("merge_add_step", {"stage": "merge", "step": AGGREGATE})
+    out = merge.call("merge_add_step", {"stage": "merge", "step": AGGREGATE})  # no error
+    assert out.startswith("Already in the draft as merge[0]: aggregate(")
+    assert len(workspace.pipeline.merge) == 1
+    assert len(workspace.edits) == 1
+
+
+def test_a_step_that_repeats_some_columns_keeps_its_new_ones(workspace: Workspace, merge: LocalTools) -> None:
+    merge.call("merge_add_step", {"stage": "merge", "step": AGGREGATE})
+    more = {**AGGREGATE, "aggregations": [{"op": "count"}, {"op": "max", "column": "points"}]}
+    out = merge.call("merge_add_step", {"stage": "merge", "step": more})
+    assert "New feature columns: results.max(points)" in out
+    assert "Already in the draft from an earlier step, skipped: results.count()" in out
+    assert workspace.features() == ("date", "results.count()", "results.mean(points)", "results.max(points)")

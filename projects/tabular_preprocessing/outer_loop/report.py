@@ -26,7 +26,14 @@ import pandas as pd
 import yaml
 
 from tabular_preprocessing.inner_loop.data import RelationalTask, load_relbench_task
-from tabular_preprocessing.inner_loop.harness import Evaluation, ModelFactory, Tables, evaluate, fit_predict
+from tabular_preprocessing.inner_loop.harness import (
+    EMPTY_FEATURE,
+    Evaluation,
+    ModelFactory,
+    Tables,
+    evaluate,
+    fit_predict,
+)
 from tabular_preprocessing.inner_loop.harness import score as score_run
 from tabular_preprocessing.inner_loop.library import REGISTRY
 from tabular_preprocessing.inner_loop.pipeline import Pipeline, PipelineError
@@ -262,8 +269,14 @@ def final_evaluation(
         base = evaluate(Pipeline.identity(), task, factory, config.max_rows).score
         for trial, run in pairs:
             try:
+                # as in the run: features empty for nearly all test rows are left out
                 score: float | None = evaluate(
-                    Pipeline.from_dict(run["pipeline"]), task, factory, config.max_rows, config.max_columns
+                    Pipeline.from_dict(run["pipeline"]),
+                    task,
+                    factory,
+                    config.max_rows,
+                    config.max_columns,
+                    drop_empty=EMPTY_FEATURE,
                 ).score
             except PipelineError as error:
                 log(f"  {run['run_id']}: the pipeline does not run on the test split: {error}")

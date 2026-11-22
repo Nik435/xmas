@@ -455,6 +455,7 @@ def _row(spec: RunSpec, result: InnerLoopResult, seconds: float) -> dict[str, An
         "metric": result.metric,
         "error": result.error,
         "n_features": len(result.features),
+        "dropped_features": result.dropped,
         "n_edits": len(result.edits),
         "agent_calls": len(result.trace.records),
         "evaluations": result.evaluations,

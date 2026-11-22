@@ -23,6 +23,7 @@ from typing import Any
 from tabular_preprocessing.inner_loop.architecture import Architecture
 from tabular_preprocessing.inner_loop.data import RelationalTask
 from tabular_preprocessing.inner_loop.harness import (
+    EMPTY_FEATURE,
     ModelFactory,
     Tables,
     build_tables,
@@ -51,6 +52,7 @@ class InnerLoopResult:
         metric: ``"roc_auc"`` or ``"neg_mae"``.
         baseline: The identity pipeline's score, if computed.
         features: The feature columns of the tables the pipeline built.
+        dropped: Features the pipeline built but the harness left out: empty for nearly all rows to predict.
         error: Why the run failed (the system or the pipeline), else ``None``.
         seconds: Wall time per phase: fill, tables, predict, baseline.
         tokens: Input and output tokens of all agents.
@@ -67,6 +69,7 @@ class InnerLoopResult:
     metric: str | None = None
     baseline: float | None = None
     features: list[str] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
     error: str | None = None
     seconds: dict[str, float] = field(default_factory=dict)
     tokens: dict[str, int] = field(default_factory=dict)
@@ -165,7 +168,10 @@ def run_inner_loop(
     # 2. tables, 3. predict, 4. score; a failed system run may still have left a pipeline worth scoring
     try:
         start = time.perf_counter()
-        tables: Tables = build_tables(workspace.pipeline, task, task.train, task.val, max_rows, max_columns)
+        tables: Tables = build_tables(
+            workspace.pipeline, task, task.train, task.val, max_rows, max_columns, drop_empty=EMPTY_FEATURE
+        )
+        result.dropped = list(tables.dropped)
         seconds["tables"] = time.perf_counter() - start
         start = time.perf_counter()
         run = fit_predict(tables, workspace.pipeline, task.task_type, model_factory)

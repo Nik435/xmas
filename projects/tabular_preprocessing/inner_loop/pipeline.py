@@ -69,19 +69,24 @@ class Call:
     def from_dict(cls, data: dict[str, Any], stage: str) -> Call:
         """Read a call from ``{"fn": ..., **params}``; for ``clean``, ``table`` is the call's own field.
 
-        Two forms models often write instead are read as meant: ``{"function": ..., **params}`` and the
-        function name as the only key, ``{"aggregate": {...params}}``.
+        Forms models often write instead are read as meant, as long as only one function fits:
+        ``{"function": ..., **params}``; the function name as the only key, ``{"aggregate": {...params}}``;
+        the function name as a key set to true, ``{"entity_columns": "true", "columns": [...]}``; and no
+        function name at all, when exactly one function of the slot takes these parameters (its
+        required ones all given, no unknown one).
         """
         if isinstance(data, dict) and "fn" not in data:
+            fns = REGISTRY.get(stage, {})
+            flags = [k for k, v in data.items() if k in fns and (v is True or str(v).lower() == "true")]
             if "function" in data:
                 data = {"fn": data["function"], **{k: v for k, v in data.items() if k != "function"}}
-            elif (
-                len(data) == 1
-                and next(iter(data)) in REGISTRY.get(stage, {})
-                and isinstance(next(iter(data.values())), dict)
-            ):
+            elif len(data) == 1 and next(iter(data)) in fns and isinstance(next(iter(data.values())), dict):
                 ((name, params_),) = data.items()
                 data = {"fn": name, **params_}
+            elif len(flags) == 1:
+                data = {"fn": flags[0], **{k: v for k, v in data.items() if k != flags[0]}}
+            elif (inferred := _infer(stage, data)) is not None:
+                data = {"fn": inferred, **data}
         if not isinstance(data, dict) or "fn" not in data:
             raise PipelineError(
                 f"A {stage} step must be one object: 'fn' names the function and its parameters sit next to it, "
@@ -199,6 +204,18 @@ class Pipeline:
         lines.insert(3, f"{'sample':12s} {self.sample}")
         lines.append(f"{'model_kwargs':12s} {self.model_kwargs or '-'}")
         return "\n".join(lines)
+
+
+def _infer(stage: str, data: dict[str, Any]) -> str | None:
+    """The one function of ``stage`` whose parameters fit ``data``, or ``None`` if none or several do."""
+    given = set(data) - ({"table"} if stage == "clean" else set())
+    fits = []
+    for name, fn in REGISTRY.get(stage, {}).items():
+        keyword = {n: p for n, p in inspect.signature(fn).parameters.items() if p.kind is p.KEYWORD_ONLY}
+        required = {n for n, p in keyword.items() if p.default is p.empty}
+        if given <= set(keyword) and required <= given:
+            fits.append(name)
+    return fits[0] if len(fits) == 1 else None
 
 
 def _example(stage: str) -> dict[str, Any]:

@@ -19,9 +19,10 @@ SCHEMA_JOIN_ANALYST = AgentType(
         "rows a label row sees, for the fitting rows and for the rows the run is finally scored on, which lie "
         "after the database's last rows; merge_time_overview relates the tables' times to the label times. "
         "Decide which columns to aggregate, with which operations (count, sum, mean, min, max, std, nunique, "
-        "time_since_last for numbers; mode and count_by for categories) and which rows to keep with where "
-        "(e.g. only attended events), given what the target is about. Every aggregate uses all history before "
-        "the label row's time. If the target is about the entity repeating its behaviour, plan target_history. "
+        "time_since_last, time_since_first for numbers and times; last, mode and count_by also for "
+        "categories) and which rows to keep with where (e.g. only attended events), given what the target "
+        "is about. Every aggregate uses all history before the label row's time. If the target is about "
+        "the entity repeating its behaviour, plan target_history. "
         "Then name derived features worth building (ratios, differences, logs of skewed counts, date parts)."
     ),
     answer=(
@@ -45,8 +46,10 @@ FEATURE_ENGINEER = AgentType(
         "(entity_columns, lookup, child_columns, aggregate, target_history), then engineer steps that build on "
         "their columns. Every change answers with the feature columns it added, by their exact names; "
         "merge_list_features lists all of them; engineer steps must use those names. Use merge_show_pipeline "
-        "to check the result and merge_replace_step or merge_remove_step to correct it. Prefer a few strong "
-        "features over many weak ones."
+        "to check the result and merge_replace_step or merge_remove_step to correct it. If you are revising "
+        "earlier work (a review or an objection is above), start with merge_show_pipeline: your earlier steps "
+        "are still in the draft; change them with merge_replace_step or merge_remove_step instead of adding "
+        "them again. Prefer a few strong features over many weak ones."
     ),
     answer=(
         "A short report: the steps you added (function, table, columns, why) and anything from the plan you "

@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from conftest import DAY, T0, with_licences
-from tabular_preprocessing import REGISTRY, Pipeline, PipelineError, RelationalTask, run
+from tabular_preprocessing import REGISTRY, Pipeline, PipelineError, RelationalTask, Table, run
 from tabular_preprocessing.inner_loop.harness import build_tables
 
 WEEK = 7 * DAY
@@ -209,7 +209,7 @@ def test_two_common_wrong_step_forms_are_read_as_meant(step: dict) -> None:
 
 def test_a_step_without_fn_gets_a_correct_example() -> None:
     with pytest.raises(PipelineError, match=re.escape('e.g. {"fn": "entity_columns"')):
-        Pipeline.from_dict({"merge": [{"columns": ["x"]}]})
+        Pipeline.from_dict({"merge": [{"colums": ["x"]}]})  # fits no function
 
 
 def test_a_misspelled_feature_name_gets_the_closest_names(task: RelationalTask) -> None:
@@ -223,3 +223,158 @@ def test_a_misspelled_feature_name_gets_the_closest_names(task: RelationalTask) 
     )
     with pytest.raises(PipelineError, match=r"closest: results\.count\(\)"):
         run(pipeline, task, task.train, task.val)
+
+
+# ------------------------------------------------------------ fixes after grid81_v2
+
+
+@pytest.mark.parametrize(
+    ("stage", "step", "fn"),
+    [
+        # no fn at all: only aggregate takes table, fk_column and aggregations
+        ("merge", {"table": "results", "fk_column": "driverId", "aggregations": [{"op": "count"}]}, "aggregate"),
+        ("merge", {"ops": ["count"]}, "target_history"),
+        ("clean", {"table": "results", "values": [-1.0]}, "placeholder_as_missing"),
+        # the function name as a key set to true
+        ("merge", {"entity_columns": "true", "columns": ["nationality"]}, "entity_columns"),
+        ("engineer", {"count_encode": True, "columns": ["drivers.nationality"]}, "count_encode"),
+    ],
+)
+def test_a_step_without_fn_is_read_when_only_one_function_fits(stage: str, step: dict, fn: str) -> None:
+    assert getattr(Pipeline.from_dict({stage: [step]}), stage)[0].fn == fn
+
+
+def test_a_step_that_fits_several_functions_is_still_refused() -> None:
+    # log_transform, count_encode, missing_indicators ... all take just columns
+    with pytest.raises(PipelineError, match="'fn' names the function"):
+        Pipeline.from_dict({"engineer": [{"columns": ["results.count()"]}]})
+
+
+def test_last_is_the_value_of_the_latest_row(task: RelationalTask) -> None:
+    at = T0 + 12 * WEEK
+    seed = pd.DataFrame({"date": [at], "driverId": [6]})
+    step = {
+        "fn": "aggregate",
+        "table": "results",
+        "fk_column": "driverId",
+        "aggregations": [{"op": "last", "column": "points"}],
+    }
+    out = features(merge(step), task, seed)
+    latest = results_before(task, 6, at).sort_values("date").points.iloc[-1]  # race 11: before the label time
+    assert out["results.last(points)"].tolist() == pytest.approx([latest])
+
+
+def test_boolean_columns_and_targets_are_aggregated_as_numbers(task: RelationalTask) -> None:
+    results = task.db["results"]
+    db = {**task.db, "results": replace(results, df=results.df.assign(podium=results.df.position <= 3))}
+    on = replace(task, db=db, train=task.train.assign(good=task.train.good.astype(bool)))
+    at = T0 + 30 * WEEK
+    seed = pd.DataFrame({"date": [at], "driverId": [1]})
+    pipeline = merge(
+        {
+            "fn": "aggregate",
+            "table": "results",
+            "fk_column": "driverId",
+            "aggregations": [{"op": "mean", "column": "podium"}, {"op": "sum", "column": "podium"}],
+        },
+        {"fn": "target_history", "ops": ["mean", "last"]},
+    )
+    out = features(pipeline, on, seed)
+    rows = results_before(on, 1, at)
+    assert out["results.mean(podium)"].tolist() == pytest.approx([rows.podium.mean()])
+    assert out["results.sum(podium)"].tolist() == [rows.podium.sum()]
+    past = on.train[(on.train.driverId == 1) & (on.train.date < at)]
+    assert out["target_history.mean(good)"].tolist() == pytest.approx([past.good.mean()])
+
+
+def test_a_table_with_two_keys_to_the_entity_is_named_by_the_key(task: RelationalTask) -> None:
+    duels = pd.DataFrame({"duelId": range(4), "winner": [0, 0, 1, 2], "loser": [1, 2, 0, 0], "date": [T0] * 4})
+    db = {**task.db, "duels": Table(duels, "duelId", {"winner": "drivers", "loser": "drivers"}, "date")}
+    on = replace(task, db=db)
+    seed = pd.DataFrame({"date": [T0 + WEEK], "driverId": [0]})
+    pipeline = merge(
+        {"fn": "aggregate", "table": "duels", "fk_column": "winner", "aggregations": [{"op": "count"}]},
+        {"fn": "aggregate", "table": "duels", "fk_column": "loser", "aggregations": [{"op": "count"}]},
+    )
+    out = features(pipeline, on, seed)  # before, both were duels.count(): refused as a repeated column
+    assert out["duels[winner].count()"].tolist() == [2]
+    assert out["duels[loser].count()"].tolist() == [2]
+    # a table with one key to the entity keeps its plain name
+    plain = features(
+        merge({"fn": "aggregate", "table": "results", "fk_column": "driverId", "aggregations": [{"op": "count"}]}),
+        task,
+        seed,
+    )
+    assert "results.count()" in plain
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        {"fn": "entity_columns", "columns": ["drivers.nationality"]},
+        {"fn": "lookup", "fk_column": "teamId", "columns": ["teams.country"]},
+        {"fn": "child_columns", "table": "licences", "fk_column": "driverId", "columns": ["licences.grade"]},
+    ],
+)
+def test_a_table_prefix_on_a_column_is_removed(task: RelationalTask, step: dict) -> None:
+    out = features(merge(step), with_licences(task), pd.DataFrame({"date": [T0 + 9 * WEEK], "driverId": [1]}))
+    prefixed = step["columns"][0]
+    assert list(out.columns)[-1] == prefixed  # the feature keeps its usual name, from the bare column
+
+
+def test_a_column_built_again_with_the_same_values_is_skipped(task: RelationalTask) -> None:
+    count = {"fn": "aggregate", "table": "results", "fk_column": "driverId", "aggregations": [{"op": "count"}]}
+    both = {**count, "aggregations": [{"op": "count"}, {"op": "mean", "column": "points"}]}
+    built = build_tables(merge(count, both), task, task.train, task.val)
+    assert list(built.x_train.columns) == ["date", "results.count()", "results.mean(points)"]
+    assert built.skipped == {str(Pipeline.from_dict({"merge": [both]}).merge[0]): ["results.count()"]}
+
+
+def test_a_column_built_again_with_other_values_is_refused(
+    task: RelationalTask, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def impostor(ctx, seed):  # same name as the real count, other values
+        return pd.DataFrame({"results.count()": 99.0}, index=seed.index)
+
+    monkeypatch.setitem(REGISTRY["merge"], "impostor", impostor)
+    count = {"fn": "aggregate", "table": "results", "fk_column": "driverId", "aggregations": [{"op": "count"}]}
+    with pytest.raises(PipelineError, match="already built with other values"):
+        build_tables(merge(count, {"fn": "impostor"}), task, task.train, task.val)
+
+
+# --------------------------------------------------------------- round 3: after grid81_v2
+
+
+def test_time_since_first_is_the_age_of_the_first_row(task: RelationalTask) -> None:
+    at = T0 + 12 * WEEK
+    seed = pd.DataFrame({"date": [at], "driverId": [3]})
+    step = {
+        "fn": "aggregate",
+        "table": "results",
+        "fk_column": "driverId",
+        "aggregations": [{"op": "time_since_first"}, {"op": "time_since_last"}],
+    }
+    out = features(merge(step), task, seed)
+    assert out["results.time_since_first(date)"].tolist() == [84.0]  # first race in week 0
+    assert out["results.time_since_last(date)"].tolist() == [7.0]
+
+
+def test_features_empty_on_the_rows_to_predict_are_dropped_when_asked(task: RelationalTask) -> None:
+    fresh = task.val.assign(driverId=task.val.driverId + 1000)  # new drivers: the database knows nothing of them
+    pipeline = merge(
+        {"fn": "entity_columns", "columns": ["nationality"]},
+        {
+            "fn": "aggregate",
+            "table": "results",
+            "fk_column": "driverId",
+            "aggregations": [{"op": "count"}, {"op": "mean", "column": "points"}],
+        },
+    )
+    kept = build_tables(pipeline, task, task.train, fresh)
+    assert "results.mean(points)" in kept.x_train and kept.dropped == []  # off by default (the baselines)
+    built = build_tables(pipeline, task, task.train, fresh, drop_empty=0.95)
+    # a count of 0 is a value; the time column always stays
+    assert built.dropped == ["drivers.nationality", "results.mean(points)"]
+    assert list(built.x_train.columns) == list(built.x_test.columns) == ["date", "results.count()"]
+    # on rows the database knows, nothing is dropped
+    assert build_tables(pipeline, task, task.train, task.val, drop_empty=0.95).dropped == []

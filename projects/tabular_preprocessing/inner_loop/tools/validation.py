@@ -20,7 +20,7 @@ import pandas as pd
 from sklearn.metrics import roc_auc_score
 
 from tabular_preprocessing.inner_loop.data import RelationalTask
-from tabular_preprocessing.inner_loop.harness import Tables, build_tables
+from tabular_preprocessing.inner_loop.harness import EMPTY_FEATURE, Tables, build_tables
 from tabular_preprocessing.inner_loop.library import STAGES
 from tabular_preprocessing.inner_loop.pipeline import Pipeline, PipelineError
 from tabular_preprocessing.inner_loop.tools.filling import GROUP_SLOTS
@@ -29,7 +29,7 @@ from tabular_preprocessing.inner_loop.tools.workspace import Scored, Workspace
 from xmas.tools import Tool, tool
 
 _LISTS = ("clean", "merge", "engineer", "postprocess")
-PREDICTION_EMPTY = 0.95  # a feature at least this empty on the rows to predict cannot help there
+PREDICTION_EMPTY = EMPTY_FEATURE  # a feature at least this empty on the rows to predict is left out
 
 
 def validation_tools(workspace: Workspace, group: str) -> list[Tool]:
@@ -97,7 +97,7 @@ def validation_tools(workspace: Workspace, group: str) -> list[Tool]:
                 0,
                 "ERRORS, fix before you finish: these features are empty for nearly all rows the run is "
                 "finally scored on (those rows lie after the database's last rows), so they cannot help "
-                "there; the tool scores do not show this. Remove or replace their steps:\n" + bullets(errors),
+                "there and are left out when the run is scored. Remove or replace their steps:\n" + bullets(errors),
             )
         return "\n".join(out)
 
@@ -177,7 +177,7 @@ def validation_tools(workspace: Workspace, group: str) -> list[Tool]:
             )
             flags = []
             if predicted.get(str(c), 0.0) >= PREDICTION_EMPTY:
-                flags.append("EMPTY on the rows to predict: cannot help there, remove it")
+                flags.append("EMPTY on the rows to predict: left out when the run is scored, remove it")
             if signal is not None and (signal > 0.95 or (task.task_type == "classification" and signal < 0.05)):
                 flags.append("near-perfect signal: check for target leakage")
             if c.split(".", 1)[0] in static and "(" not in c:

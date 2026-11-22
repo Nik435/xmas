@@ -107,6 +107,15 @@ def test_inner_loop_fills_builds_predicts_and_scores(task: RelationalTask) -> No
     assert result.tokens["input"] > 0
 
 
+def test_the_run_is_scored_without_features_empty_on_the_rows_to_predict(task: RelationalTask) -> None:
+    # the validation rows are new drivers: their features from the database are empty
+    fresh = RelationalTask(**{**task.__dict__, "val": task.val.assign(driverId=task.val.driverId + 1000)})
+    result = run_inner_loop(Architecture(), fresh, TeamLLM(STEPS), baseline=False)
+    assert result.error is None
+    assert result.dropped == ["drivers.nationality", "results.mean(points)"]
+    assert result.features == ["date", "results.count()"]
+
+
 def test_a_rejection_sends_the_work_back_once(task: RelationalTask) -> None:
     llm = TeamLLM(STEPS, verdicts={"clean": ["<continue> drop the placeholder step"]})
     result = run_inner_loop(Architecture.from_code("clean=EV-VE|merge=E"), task, llm, baseline=False)

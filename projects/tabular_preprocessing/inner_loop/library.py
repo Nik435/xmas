@@ -35,7 +35,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from tabular_preprocessing.inner_loop.data import Database
+from tabular_preprocessing.inner_loop.data import Database, Table
 
 STAGES: tuple[str, ...] = ("clean", "merge", "engineer", "sample", "postprocess")
 
@@ -139,7 +139,20 @@ class MergeContext:
     horizon: pd.Timedelta | None = None
 
 
-AggOp = Literal["count", "sum", "mean", "min", "max", "std", "nunique", "mode", "count_by", "time_since_last"]
+AggOp = Literal[
+    "count",
+    "sum",
+    "mean",
+    "min",
+    "max",
+    "std",
+    "nunique",
+    "mode",
+    "count_by",
+    "last",
+    "time_since_last",
+    "time_since_first",
+]
 _SQL = {"sum": "sum", "mean": "avg", "min": "min", "max": "max", "std": "stddev", "nunique": "count(DISTINCT"}
 COUNT_BY_TOP = 5  # values count_by makes a column for, by default: the most frequent ones
 COUNT_BY_MAX = 20
@@ -160,6 +173,7 @@ def _entity_rows(ctx: MergeContext, seed: pd.DataFrame, columns: list[str]) -> p
 @register("merge")
 def entity_columns(ctx: MergeContext, seed: pd.DataFrame, *, columns: list[str]) -> pd.DataFrame:
     """Columns of the entity's own row (e.g. a driver's nationality), as ``<entity_table>.<column>``."""
+    columns = _unprefixed(columns, ctx.entity_table, ctx.db[ctx.entity_table].df.columns)
     return _entity_rows(ctx, seed, columns).add_prefix(f"{ctx.entity_table}.")
 
 
@@ -181,6 +195,7 @@ def lookup(ctx: MergeContext, seed: pd.DataFrame, *, fk_column: str, columns: li
     parent = ctx.db[fkeys[fk_column]]
     if parent.pkey is None:
         raise ValueError(f"{fkeys[fk_column]!r} has no primary key to join on.")
+    columns = _unprefixed(columns, fkeys[fk_column], parent.df.columns)
     keys = _entity_rows(ctx, seed, [fk_column])
     rows = parent.df[[parent.pkey, *columns]].drop_duplicates(parent.pkey)
     joined = keys.merge(rows, how="left", left_on=fk_column, right_on=parent.pkey)
@@ -203,14 +218,18 @@ def aggregate(
     ``aggregations`` is a list like ``[{"op": "count"}, {"op": "mean", "column": "points"}]``; ops:
     count, sum, mean, min, max, std (numeric columns), nunique, mode (the most frequent value, also of
     text), count_by (one count per value of a categorical column: ``{"op": "count_by", "column":
-    "status"}`` for its 5 most frequent values, or ``"values": [...]``) and time_since_last (days since
-    the latest row). ``where`` keeps only rows with one of the given values, e.g. ``{"status": ["yes"]}``.
+    "status"}`` for its 5 most frequent values, or ``"values": [...]``), last (the column's value in the
+    latest row), time_since_last (days since the latest row) and time_since_first (days since the
+    first row: how long the entity has had rows, e.g. a product's age). ``where`` keeps only rows with one of
+    the given values, e.g. ``{"status": ["yes"]}``.
 
     ``via`` reaches a table two steps away: ``fk_column`` is then the key of the ``via`` table to the
     entity, and the ``via`` table holds a foreign key to ``table``; e.g. ``table="events",
     via="event_attendees", fk_column="user_id"`` aggregates the events a user attended. Columns (in
     ``aggregations`` and ``where``) may then come from either table. Columns are named
-    ``<table>.<op>(<column>)``, with ``<via>><table>`` for ``via`` and ``[<column>=<values>]`` for ``where``.
+    ``<table>.<op>(<column>)``, with ``<via>><table>`` for ``via`` and ``[<column>=<values>]`` for ``where``;
+    a table with two keys to the entity (e.g. a user's friends, by ``user`` and by ``friend``) is named
+    ``<table>[<fk_column>]``, so both directions can be aggregated.
     """
     child = ctx.db.get(table)
     if child is None:
@@ -220,6 +239,7 @@ def aggregate(
             raise ValueError(f"{table}.{fk_column} is not a foreign key to {ctx.entity_table!r}.")
         sources = {"f": child}
         joins = f'JOIN "{table}" f ON f."{fk_column}" = s."{ctx.entity_col}"'
+        label = _keyed(table, child, fk_column, ctx.entity_table)
     else:
         bridge = ctx.db.get(via)
         if bridge is None:
@@ -234,6 +254,7 @@ def aggregate(
         if child.pkey is None:
             raise ValueError(f"{table!r} has no primary key to join on.")
         sources = {"f": child, "b": bridge}  # the target table first: its columns win a name clash
+        label = table
         joins = (
             f'JOIN "{via}" b ON b."{fk_column}" = s."{ctx.entity_col}" '
             f'JOIN "{table}" f ON f."{child.pkey}" = b."{links[0]}"'
@@ -246,17 +267,22 @@ def aggregate(
         names = sorted({c for source in sources.values() for c in source.df.columns})
         raise ValueError(f"{' or '.join(_name(table, via))} has no column {column!r}; columns are {names}.")
 
+    timed = next(((a, s) for a, s in sources.items() if s.time_col), None)
     exprs, names, kinds, params = [], [], [], []
     for agg in aggregations:
         op, column = agg.get("op"), agg.get("column")
         if op == "count":
-            items = [("count(*)", f"{table}.count()", "count")]
-        elif op == "time_since_last":
-            alias, source = next(((a, s) for a, s in sources.items() if s.time_col), (None, None))
-            if source is None:
-                raise ValueError(f"{table!r} has no time column for time_since_last.")
-            column = source.time_col
-            items = [(f'date_diff(\'day\', max({alias}."{column}"), s."{ctx.time_col}")', None, "number")]
+            items = [("count(*)", f"{label}.count()", "count")]
+        elif op in ("time_since_last", "time_since_first", "last"):
+            if timed is None:
+                raise ValueError(f"{table!r} has no time column for {op}.")
+            ta, tcol = timed[0], timed[1].time_col
+            if op in ("time_since_last", "time_since_first"):
+                column, edge = tcol, "max" if op == "time_since_last" else "min"
+                items = [(f'date_diff(\'day\', {edge}({ta}."{tcol}"), s."{ctx.time_col}")', None, "number")]
+            else:
+                alias, values = resolve(column)
+                items = [(f'arg_max({_sql_value(alias, column, values)}, {ta}."{tcol}")', None, "mode")]
         elif op == "count_by":
             alias, values = resolve(column)
             chosen = agg.get("values")
@@ -272,7 +298,7 @@ def aggregate(
                 items.append(
                     (
                         f'sum(CASE WHEN {alias}."{column}" = ? THEN 1 ELSE 0 END)',
-                        f"{table}.count_by({column}={value})",
+                        f"{label}.count_by({column}={value})",
                         "count",
                     )
                 )
@@ -286,16 +312,17 @@ def aggregate(
                 raise ValueError(
                     f"{op} needs a numeric column; {table}.{column} is {values.dtype} (use mode or count_by)."
                 )
-            items = [(f'{_SQL[op]}({alias}."{column}")' + (")" if op == "nunique" else ""), None, "number")]
+            value = f'{alias}."{column}"' if op == "nunique" else _sql_value(alias, column, values)
+            items = [(f"{_SQL[op]}({value})" + (")" if op == "nunique" else ""), None, "number")]
         else:
             raise ValueError(f"Unknown aggregation op {op!r}; choose from {list(AggOp.__args__)}.")  # type: ignore[attr-defined]
         for expr, name, kind in items:
             exprs.append(expr)
-            names.append(name or f"{table}.{op}({column or ''})")
+            names.append(name or f"{label}.{op}({column or ''})")
             kinds.append(kind)
     if not exprs:
         raise ValueError("aggregations must not be empty.")
-    prefix = f"{via}>" if via else ""
+    prefix = f"{_keyed(via, ctx.db[via], fk_column, ctx.entity_table)}>" if via else ""
     suffix = "".join(f"[{c}={'|'.join(map(str, v))}]" for c, v in (where or {}).items())
     names = [prefix + n + suffix for n in names]
     if len(set(names)) < len(names):
@@ -330,6 +357,29 @@ def aggregate(
     return out.set_axis(seed.index)
 
 
+def _keyed(name: str, table: Table, fk_column: str, entity: str) -> str:
+    """A table's name in feature names: with the key when it has two keys to the entity (``user_friends[friend]``)."""
+    to_entity = [c for c, target in (table.fkeys or {}).items() if target == entity]
+    return f"{name}[{fk_column}]" if len(to_entity) > 1 else name
+
+
+def _sql_value(alias: str, column: str, values: pd.Series) -> str:
+    """A column in SQL, booleans as numbers: DuckDB has no avg / sum / stddev of BOOLEAN."""
+    if pd.api.types.is_bool_dtype(values):
+        return f'CAST({alias}."{column}" AS DOUBLE)'
+    return f'{alias}."{column}"'
+
+
+def _unprefixed(columns: list[str], table: str, available: Any) -> list[str]:
+    """``columns`` with a ``<table>.`` prefix removed where only the bare name exists (as a model often writes them)."""
+    have = set(available)
+    out = []
+    for c in columns:
+        bare = c[len(table) + 1 :] if c.startswith(f"{table}.") else c
+        out.append(bare if c not in have and bare in have else c)
+    return out
+
+
 def _quoted(name: str) -> str:
     return name.replace('"', '""')
 
@@ -362,6 +412,7 @@ def child_columns(
         raise ValueError(f"No table {table!r}; tables are {sorted(ctx.db)}.")
     if (child.fkeys or {}).get(fk_column) != ctx.entity_table:
         raise ValueError(f"{table}.{fk_column} is not a foreign key to {ctx.entity_table!r}.")
+    columns = _unprefixed(columns, table, child.df.columns)
     keys = [c for c in columns if c in child.keys]
     if keys:
         raise ValueError(f"child_columns copies data columns, not keys or the time column: {keys}.")
@@ -412,7 +463,10 @@ def target_history(ctx: MergeContext, seed: pd.DataFrame, *, ops: list[HistoryOp
         {
             "e": labels[ctx.entity_col].to_numpy(),
             "t": pd.to_datetime(labels[ctx.time_col]).to_numpy(),
-            "y": labels[ctx.target_col].to_numpy(),
+            # booleans as numbers: DuckDB has no avg of BOOLEAN
+            "y": labels[ctx.target_col].astype(float).to_numpy()
+            if pd.api.types.is_bool_dtype(labels[ctx.target_col])
+            else labels[ctx.target_col].to_numpy(),
         }
     )
     # known from the end of its period on; without a horizon, from just after its own time

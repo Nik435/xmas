@@ -10,8 +10,11 @@ fails loudly instead of scoring quietly:
 
 - cleaning never sees a table's keys or time column, so it cannot break a join;
 - merging returns exactly one row per label row (no lost rows, no join explosion),
-  and the same calls run on train and test rows;
-- the feature count stays within ``max_columns``.
+  and the same calls run on train and test rows; a column an earlier step already built
+  with the same values is skipped, one with the same name but other values is refused;
+- the feature count stays within ``max_columns``;
+- with ``drop_empty`` (on wherever an agent's pipeline is scored), a feature that is empty for
+  nearly all rows to predict is left out: it cannot help there, and agents tend to keep it.
 
 The two halves are separate functions: :func:`build_tables` turns a pipeline into
 the predictor's train and test tables, :func:`fit_predict` fits the predictor on
@@ -39,6 +42,7 @@ from tabular_preprocessing.inner_loop.library import REGISTRY, MergeContext
 from tabular_preprocessing.inner_loop.pipeline import Call, Pipeline, PipelineError
 
 ModelFactory = Callable[..., Any]
+EMPTY_FEATURE = 0.95  # drop_empty: a feature at least this empty on the rows to predict is left out
 
 
 def default_model(task_type: TaskType, **kwargs: Any) -> Any:
@@ -125,6 +129,9 @@ class Tables:
         x_test: Test features, same columns as ``x_train``.
         views: Row indices of ``x_train`` per context view; the predictor is fitted once per view.
         log: One record per pipeline call that built them.
+        skipped: Per merge call (as text), the columns it built again with the values an earlier call
+            had already given them; they were left out.
+        dropped: The features left out because they were empty for nearly all rows to predict.
     """
 
     x_train: pd.DataFrame
@@ -132,6 +139,8 @@ class Tables:
     x_test: pd.DataFrame
     views: list[np.ndarray]
     log: list[StageRecord] = field(default_factory=list)
+    skipped: dict[str, list[str]] = field(default_factory=dict)
+    dropped: list[str] = field(default_factory=list)
 
 
 def clean_database(pipeline: Pipeline, task: RelationalTask) -> tuple[Database, list[StageRecord]]:
@@ -167,6 +176,7 @@ def build_tables(
     max_columns: int = 500,
     cleaned: tuple[Database, list[StageRecord]] | None = None,
     history: pd.DataFrame | None = None,
+    drop_empty: float | None = None,
 ) -> Tables:
     """Build the predictor's train and test tables from a pipeline: clean, merge, engineer, sample.
 
@@ -182,6 +192,8 @@ def build_tables(
         history: The label rows whose labels merge functions may use as past labels (``target_history``);
             ``train`` by default. A check on a sample of ``train`` passes all fitting rows here, so the
             sampled rows see the past labels a real run would.
+        drop_empty: Leave out every feature (except the prediction time) that is missing for at least
+            this share of the ``test`` rows; ``None`` keeps them all. Label-free, like the engineer stage.
 
     Returns:
         The tables, the context views and the log.
@@ -203,6 +215,7 @@ def build_tables(
     seeds = [rows.drop(columns=[task.target_col], errors="ignore") for rows in (train, test)]
     labels = (train if history is None else history)[[task.entity_col, task.time_col, task.target_col]]
 
+    skipped: dict[str, list[str]] = {}
     # as many threads as this process may use (a cluster job's cores, not the whole node)
     con = duckdb.connect(":memory:", config={"threads": len(os.sched_getaffinity(0))})
     try:
@@ -218,9 +231,17 @@ def build_tables(
             for new, seed in ((new_train, train), (new_test, test)):
                 if len(new) != len(seed) or not new.index.equals(seed.index):
                     raise PipelineError(f"merge/{call} must return exactly one row per label row.")
-            clash = set(new_train.columns) & set(x_train.columns)
-            if clash:
-                raise PipelineError(f"merge/{call} repeats columns {sorted(clash)}.")
+            clash = [c for c in new_train.columns if c in x_train.columns]
+            same = [c for c in clash if new_train[c].equals(x_train[c]) and new_test[c].equals(x_test[c])]
+            if len(same) < len(clash):
+                other = sorted(set(clash) - set(same))
+                raise PipelineError(
+                    f"merge/{call} builds columns {other} that an earlier step already built with other values "
+                    "(e.g. a lookup of the same table through another key); rename or remove one of the steps."
+                )
+            if same:  # the same name is the same computation: keep the first copy
+                skipped[str(call)] = same
+                new_train, new_test = new_train.drop(columns=same), new_test.drop(columns=same)
             x_train = pd.concat([x_train, new_train], axis=1)
             x_test = pd.concat([x_test, new_test], axis=1)
             log.append(_record("merge", call, x_train.shape, start))
@@ -236,6 +257,11 @@ def build_tables(
             raise PipelineError(f"engineer/{call} must give train and test the same columns.")
         log.append(_record("engineer", call, x_train.shape, start))
 
+    dropped: list[str] = []
+    if drop_empty is not None and len(x_test):
+        dropped = [c for c in x_test.columns if c != task.time_col and x_test[c].isna().mean() >= drop_empty]
+        x_train, x_test = x_train.drop(columns=dropped), x_test.drop(columns=dropped)
+
     if x_train.shape[1] > max_columns:
         raise PipelineError(f"{x_train.shape[1]} feature columns exceed the budget of {max_columns}.")
 
@@ -244,7 +270,7 @@ def build_tables(
     if not views or any(len(v) == 0 for v in views):
         raise PipelineError(f"sample/{pipeline.sample} returned an empty view.")
     log.append(_record("sample", pipeline.sample, (len(views), max(len(v) for v in views)), start))
-    return Tables(x_train, y_train, x_test, views, log)
+    return Tables(x_train, y_train, x_test, views, log, skipped, dropped)
 
 
 def fit_predict(
@@ -299,6 +325,7 @@ def run(
     max_rows: int = 10_000,
     max_columns: int = 500,
     cleaned: tuple[Database, list[StageRecord]] | None = None,
+    drop_empty: float | None = None,
 ) -> RunResult:
     """Run a pipeline once: :func:`build_tables`, then :func:`fit_predict`.
 
@@ -311,6 +338,7 @@ def run(
         max_rows: Most rows a context view may hold.
         max_columns: Most feature columns the predictor may receive.
         cleaned: The result of :func:`clean_database` for this pipeline, if already known (a cache).
+        drop_empty: See :func:`build_tables`.
 
     Returns:
         Predictions for ``test`` and the log.
@@ -318,7 +346,7 @@ def run(
     Raises:
         PipelineError: If a call fails or breaks a contract.
     """
-    tables = build_tables(pipeline, task, train, test, max_rows, max_columns, cleaned)
+    tables = build_tables(pipeline, task, train, test, max_rows, max_columns, cleaned, drop_empty=drop_empty)
     return fit_predict(tables, pipeline, task.task_type, model_factory)
 
 
@@ -344,6 +372,7 @@ def evaluate(
     max_rows: int = 10_000,
     max_columns: int = 500,
     cleaned: tuple[Database, list[StageRecord]] | None = None,
+    drop_empty: float | None = None,
 ) -> Evaluation:
     """Fit on the task's train rows and score its validation rows.
 
@@ -354,11 +383,12 @@ def evaluate(
         max_rows: Most rows a context view may hold.
         max_columns: Most feature columns the predictor may receive.
         cleaned: The result of :func:`clean_database` for this pipeline, if already known (a cache).
+        drop_empty: See :func:`build_tables`.
 
     Returns:
         The score and the run.
     """
-    result = run(pipeline, task, task.train, task.val, model_factory, max_rows, max_columns, cleaned)
+    result = run(pipeline, task, task.train, task.val, model_factory, max_rows, max_columns, cleaned, drop_empty)
     return score(result, task.val[task.target_col].to_numpy())
 
 

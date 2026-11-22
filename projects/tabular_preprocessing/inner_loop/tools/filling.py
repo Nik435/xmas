@@ -13,6 +13,10 @@ step needs) is refused with the reason, and the draft stays as it was. A change 
 answered with the feature columns it added or removed, by their exact names, so engineer steps
 can refer to them; ``list_features`` lists all of the draft's columns.
 
+Adding a step the slot already holds changes nothing and says where it is (an executor sent back
+to revise its work often starts its plan over). A step that builds some columns an earlier step
+already built is kept with its other columns; the repeated ones are named as skipped.
+
 One call to :func:`filling_tools` gives one group its tools, names prefixed with
 the group (``clean_add_step``, ``merge_add_step``, ...), so both groups' tools
 can sit in one system without clashing.
@@ -93,6 +97,16 @@ def filling_tools(workspace: Workspace, group: str, slots: Sequence[str] | None 
             position: Where to insert it (0 = first); at the end if omitted.
         """
         steps = _steps(workspace.pipeline, stage)
+        if stage != "sample":
+            call = getattr(Pipeline.from_dict({stage: [step]}), stage)[0]
+            calls = _calls(workspace.pipeline, stage)
+            if call in calls:
+                i = calls.index(call)
+                return (
+                    f"Already in the draft as {stage}[{i}]: {call}. Nothing changed; your earlier steps stay in "
+                    "the draft (use replace_step or remove_step to change them).\n"
+                    + _render_slot(workspace.pipeline, stage)
+                )
         at = 0 if stage == "sample" else len(steps) if position is None else position
         if not 0 <= at <= len(steps):
             raise PipelineError(f"position must be between 0 and {len(steps)}.")
@@ -104,7 +118,7 @@ def filling_tools(workspace: Workspace, group: str, slots: Sequence[str] | None 
         before = _features(workspace, workspace.pipeline)
         added = _commit(workspace, stage, steps, at)
         workspace.edits.append(Edit(f"{group}_add_step", stage, "add", added))
-        change = _change(before, _features(workspace, workspace.pipeline))
+        change = _change(before, _features(workspace, workspace.pipeline), workspace.skipped().get(added))
         return f"Added to {stage}: {added}\n{change}{_render_slot(workspace.pipeline, stage)}"
 
     def replace_step(stage: str, index: int, step: dict[str, Any]) -> str:
@@ -123,7 +137,7 @@ def filling_tools(workspace: Workspace, group: str, slots: Sequence[str] | None 
         before = _features(workspace, workspace.pipeline)
         new = _commit(workspace, stage, steps, index)
         workspace.edits.append(Edit(f"{group}_replace_step", stage, "replace", new))
-        change = _change(before, _features(workspace, workspace.pipeline))
+        change = _change(before, _features(workspace, workspace.pipeline), workspace.skipped().get(new))
         return f"Replaced {stage}[{index}] with {new}\n{change}{_render_slot(workspace.pipeline, stage)}"
 
     def remove_step(stage: str, index: int) -> str:
@@ -214,13 +228,15 @@ def _features(workspace: Workspace, pipeline: Pipeline, refused: bool = False) -
         ) from None
 
 
-def _change(before: tuple[str, ...], after: tuple[str, ...]) -> str:
-    """The feature columns a change added and removed, by name; empty if it changed none."""
+def _change(before: tuple[str, ...], after: tuple[str, ...], skipped: list[str] | None = None) -> str:
+    """The feature columns a change added, removed and skipped (already built), by name; empty if none."""
     added = [c for c in after if c not in before]
     removed = [c for c in before if c not in after]
     lines = []
     if added:
         lines.append("New feature columns: " + ", ".join(added))
+    if skipped:
+        lines.append("Already in the draft from an earlier step, skipped: " + ", ".join(skipped))
     if removed:
         lines.append("Removed feature columns: " + ", ".join(removed))
     return "".join(f"{line}\n" for line in lines)

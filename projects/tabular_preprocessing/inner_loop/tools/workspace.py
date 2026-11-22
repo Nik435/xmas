@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 
 from tabular_preprocessing.inner_loop.data import Database, RelationalTask
 from tabular_preprocessing.inner_loop.harness import (
+    EMPTY_FEATURE,
     ModelFactory,
     StageRecord,
     build_tables,
@@ -118,6 +119,7 @@ class Workspace:
     _scores: dict[str, Scored] = field(default_factory=dict, repr=False)
     _cleaned: dict[str, tuple[Database, list[StageRecord]]] = field(default_factory=dict, repr=False)
     _features: dict[str, tuple[str, ...]] = field(default_factory=dict, repr=False)
+    _skipped: dict[str, dict[str, list[str]]] = field(default_factory=dict, repr=False)
     _missing: dict[str, dict[str, float]] = field(default_factory=dict, repr=False)
     tool_task: RelationalTask = field(init=False, repr=False)
 
@@ -177,7 +179,14 @@ class Workspace:
                 pipeline, task, train, test, self.max_rows, self.max_columns, self.cleaned(pipeline), task.train
             )
             self._features[key] = tuple(str(c) for c in built.x_train.columns)
+            self._skipped[key] = built.skipped
         return self._features[key]
+
+    def skipped(self, pipeline: Pipeline | None = None) -> dict[str, list[str]]:
+        """Per merge call, the columns it built again and the harness left out (see :meth:`features`)."""
+        pipeline = pipeline or self.pipeline
+        self.features(pipeline)
+        return self._skipped[_key(pipeline)]
 
     def prediction_missing(self, pipeline: Pipeline | None = None) -> dict[str, float]:
         """Per feature, its missing share on a sample of the rows the run is finally scored on; cached.
@@ -210,7 +219,13 @@ class Workspace:
     def _score(self, pipeline: Pipeline) -> Scored:
         try:
             result = evaluate(
-                pipeline, self.tool_task, self.model_factory, self.max_rows, self.max_columns, self.cleaned(pipeline)
+                pipeline,
+                self.tool_task,
+                self.model_factory,
+                self.max_rows,
+                self.max_columns,
+                self.cleaned(pipeline),
+                drop_empty=EMPTY_FEATURE,  # as the run is scored
             )
         except PipelineError as error:
             return Scored(None, None, error=str(error))
