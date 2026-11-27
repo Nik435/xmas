@@ -14,7 +14,8 @@
 #   sbatch -a 0 --dependency=afterany:JOBID cluster/optimization_job.sh            # report when all are done
 echo "Started at $(date) on $(hostname), job $SLURM_ARRAY_JOB_ID.$SLURM_ARRAY_TASK_ID"
 export RELBENCH_CACHE_DIR="$(ws_find tabulardata-mas)/relbench"   # data in the workspace jehled-tabulardata-mas
-set -a; source ../../.env; set +a                                  # XMAS_BASE_URL, XMAS_API_KEY (xmas/.env)
+set -a; source ../../.env; set +a                                  # XMAS_BASE_URL, XMAS_API_KEY, TABPFN_TOKEN (xmas/.env)
+export TABPFN_NO_BROWSER=1                                       # a job cannot log in through a browser: TABPFN_TOKEN instead
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1                                        # on a crash (segfault), print where it happened
 CONFIG=configs/optimization_test.yaml

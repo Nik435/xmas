@@ -225,6 +225,10 @@ sbatch -a 0 --dependency=afterany:JOBID cluster/optimization_job.sh # merge, sum
 # all 81 architectures + solo + the baselines (configs/grid81.yaml), in one go: 82 architecture
 # jobs (at most 20 at once), the baselines job alongside, the report job when all have ended
 bash cluster/start_grid.sh
+
+# the 10 best of grid81_v3 + solo on all 20 tasks with TabPFN v2, the real comparison with RDBLearn;
+# start_grid.sh reads the number of architectures and gives TabPFN 16 CPU cores per job
+CONFIG=configs/top10_tabpfn.yaml bash cluster/start_grid.sh
 ```
 
 **Predictor.** `run.predictor` is the same for every system and every baseline:

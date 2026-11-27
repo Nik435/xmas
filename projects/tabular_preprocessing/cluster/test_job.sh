@@ -14,7 +14,8 @@
 echo "Started at $(date) on $(hostname), job $SLURM_JOB_ID"
 
 export RELBENCH_CACHE_DIR="$(ws_find tabulardata-mas)/relbench"   # data in the workspace jehled-tabulardata-mas
-set -a; source ../../.env; set +a                                  # XMAS_BASE_URL, XMAS_API_KEY (xmas/.env)
+set -a; source ../../.env; set +a                                  # XMAS_BASE_URL, XMAS_API_KEY, TABPFN_TOKEN (xmas/.env)
+export TABPFN_NO_BROWSER=1                                       # a job cannot log in through a browser: TABPFN_TOKEN instead
 export PYTHONUNBUFFERED=1
 
 CONFIG=${1:-configs/smoke.yaml}

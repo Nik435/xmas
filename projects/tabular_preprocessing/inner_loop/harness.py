@@ -74,10 +74,13 @@ def tabpfn_v2_model(task_type: TaskType, **kwargs: Any) -> Any:
     from tabpfn.settings import settings
 
     settings.tabpfn.max_batched_test_rows = TABPFN_PREDICT_ROWS
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cpu":  # the cores this process may use (a cluster job's), not every core of the node
+        torch.set_num_threads(len(os.sched_getaffinity(0)))
     estimator = TabPFNClassifier if task_type == "classification" else TabPFNRegressor
     return estimator.create_default_for_version(
         ModelVersion.V2,
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        device=device,
         random_state=0,
         ignore_pretraining_limits=True,
         **kwargs,
