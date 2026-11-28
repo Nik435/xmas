@@ -287,3 +287,13 @@ def test_duplicates_are_equal_in_everything_but_the_primary_key(task: Relational
     cleaned, _ = clean_database(pipeline, replace(task, db=db))
     assert len(cleaned["results"].df) == len(results)
     assert list(cleaned["results"].df.columns) == list(results.columns)
+
+
+def test_a_table_with_only_constant_features_gets_a_constant_prediction(task: RelationalTask) -> None:
+    # all label rows at one cutoff: the identity pipeline's only feature is constant; TabPFN refuses that
+    def refuses_constant(task_type: str, **kwargs: object) -> object:
+        raise AssertionError("the predictor must not be fitted on constant features")
+
+    one_cutoff = replace(task, train=task.train.assign(**{task.time_col: task.train[task.time_col].max()}))
+    result = evaluate(Pipeline.identity(), one_cutoff, refuses_constant)
+    assert result.score == 0.5  # the prior for every row

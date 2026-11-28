@@ -355,6 +355,16 @@ def test_an_api_error_is_retried_not_scored(task: RelationalTask, tmp_path: Path
     assert trials[0]["value"] > 0
 
 
+def test_a_text_answer_instead_of_a_completion_is_an_api_error(
+    task: RelationalTask, tmp_path: Path, no_sleep: None
+) -> None:
+    # an endpoint that answers with an HTML page: the OpenAI client returns a str
+    cfg = config(output_dir=str(tmp_path / "t"), architecture={"codes": ["clean=E|merge=E"]})
+    flaky = FlakyLLM(failures=1, message="'str' object has no attribute 'choices'")
+    trials = study(cfg, task, factory=lambda m, t: flaky)
+    assert trials[0]["value"] > 0  # retried, not scored as a pipeline that did nothing
+
+
 def test_a_run_that_keeps_failing_on_the_api_leaves_its_trial_open(
     task: RelationalTask, tmp_path: Path, no_sleep: None
 ) -> None:

@@ -34,6 +34,7 @@ from typing import Any
 import duckdb
 import numpy as np
 import pandas as pd
+from sklearn.dummy import DummyClassifier, DummyRegressor
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, roc_auc_score
 
@@ -304,8 +305,14 @@ def fit_predict(
     classes = np.unique(y_train) if task_type == "classification" else None
     preds = []
     for view in tables.views:
-        model = model_factory(task_type, **pipeline.model_kwargs)
-        model.fit(x_train.iloc[view], y_train.iloc[view])
+        fit_x = x_train.iloc[view]
+        if len(fit_x) > 1 and all(fit_x[c].nunique(dropna=False) <= 1 for c in fit_x.columns):
+            # nothing to learn from (e.g. the identity pipeline's timestamp when all label rows share one
+            # cutoff): the constant any model would predict; TabPFN refuses such a table outright
+            model = DummyClassifier(strategy="prior") if classes is not None else DummyRegressor(strategy="mean")
+        else:
+            model = model_factory(task_type, **pipeline.model_kwargs)
+        model.fit(fit_x, y_train.iloc[view])
         preds.append(_predict(model, x_test, classes))
     pred = np.mean(preds, axis=0)
     fit = Call(f"fit x{len(tables.views)}", dict(pipeline.model_kwargs))

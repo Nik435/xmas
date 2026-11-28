@@ -53,7 +53,10 @@ TaskLoader = Callable[[str, str], RelationalTask]
 # errors of the API, not of the system: worth retrying, not a result
 INFRA = re.compile(
     r"timed? ?out|timeout|rate.?limit|\b429\b|\b50[0234]\b|connection|APIConnection|APIStatus|InternalServer|"
-    r"ServiceUnavailable|Bad Gateway|overloaded|LLM batch failed",
+    r"ServiceUnavailable|Bad Gateway|overloaded|LLM batch failed|"
+    # the endpoint answered with text instead of a completion (an HTML error or login page, a proxy
+    # message): the OpenAI client then hands back a str, and the first attribute access fails
+    r"'str' object has no attribute '(choices|usage|model)'",
     re.IGNORECASE,
 )
 MAX_OUTAGES = 3  # trials in a row with API errors before the study stops
