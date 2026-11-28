@@ -17,6 +17,7 @@ export RELBENCH_CACHE_DIR="$(ws_find tabulardata-mas)/relbench"   # data in the 
 set -a; source ../../.env; set +a                                  # XMAS_BASE_URL, XMAS_API_KEY, TABPFN_TOKEN (xmas/.env)
 export TABPFN_NO_BROWSER=1                                       # a job cannot log in through a browser: TABPFN_TOKEN instead
 export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True             # GPU: less memory lost to fragmentation
 
 CONFIG=${1:-configs/smoke.yaml}
 nvidia-smi -L 2>/dev/null                                          # the GPU, if the job has one

@@ -59,7 +59,9 @@ def default_model(task_type: TaskType, **kwargs: Any) -> Any:
     return HistGradientBoostingRegressor(categorical_features="from_dtype", random_state=0, **kwargs)
 
 
-TABPFN_PREDICT_ROWS = 8192  # rows per prediction batch: TabPFN's default (32,768) can exceed GPU memory
+# rows per predict call: a foundation model holds every row of one call in GPU memory (TabPFN v2 on
+# rel-amazon's 409,792 validation rows ran out of 10 GB), so the harness splits the rows itself
+PREDICT_ROWS = 8192
 
 
 def tabpfn_v2_model(task_type: TaskType, **kwargs: Any) -> Any:
@@ -74,7 +76,7 @@ def tabpfn_v2_model(task_type: TaskType, **kwargs: Any) -> Any:
     from tabpfn.constants import ModelVersion
     from tabpfn.settings import settings
 
-    settings.tabpfn.max_batched_test_rows = TABPFN_PREDICT_ROWS
+    settings.tabpfn.max_batched_test_rows = PREDICT_ROWS
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cpu":  # the cores this process may use (a cluster job's), not every core of the node
         torch.set_num_threads(len(os.sched_getaffinity(0)))
@@ -475,9 +477,10 @@ def _model_frames(x_train: pd.DataFrame, x_test: pd.DataFrame) -> tuple[pd.DataF
 
 
 def _predict(model: Any, x_test: pd.DataFrame, classes: np.ndarray | None) -> np.ndarray:
+    parts = [x_test.iloc[i : i + PREDICT_ROWS] for i in range(0, len(x_test), PREDICT_ROWS)] or [x_test]
     if classes is None:
-        return np.asarray(model.predict(x_test), dtype=float)
+        return np.concatenate([np.asarray(model.predict(part), dtype=float) for part in parts])
     # a view may miss a class; place each model column under its global class
     proba = np.zeros((len(x_test), len(classes)))
-    proba[:, np.searchsorted(classes, model.classes_)] = model.predict_proba(x_test)
+    proba[:, np.searchsorted(classes, model.classes_)] = np.concatenate([model.predict_proba(part) for part in parts])
     return proba

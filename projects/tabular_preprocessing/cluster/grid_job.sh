@@ -19,6 +19,7 @@ export RELBENCH_CACHE_DIR="$(ws_find tabulardata-mas)/relbench"   # data in the 
 set -a; source ../../.env; set +a                                  # XMAS_BASE_URL, XMAS_API_KEY, TABPFN_TOKEN (xmas/.env)
 export TABPFN_NO_BROWSER=1                                       # a job cannot log in through a browser: TABPFN_TOKEN instead
 export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True             # GPU: less memory lost to fragmentation
 export PYTHONFAULTHANDLER=1                                        # on a crash (segfault), print where it happened
 CONFIG="${CONFIG:-configs/grid81.yaml}"                           # set by cluster/start_grid.sh
 SHARDS="${SHARDS:-82}"                                            # the study's architectures, likewise

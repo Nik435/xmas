@@ -297,3 +297,28 @@ def test_a_table_with_only_constant_features_gets_a_constant_prediction(task: Re
     one_cutoff = replace(task, train=task.train.assign(**{task.time_col: task.train[task.time_col].max()}))
     result = evaluate(Pipeline.identity(), one_cutoff, refuses_constant)
     assert result.score == 0.5  # the prior for every row
+
+
+def test_predictions_are_made_in_chunks(task: RelationalTask) -> None:
+    # a foundation model holds all rows of one predict call in GPU memory: never more than PREDICT_ROWS
+    from tabular_preprocessing.inner_loop.harness import PREDICT_ROWS, Tables, fit_predict
+
+    sizes: list[int] = []
+
+    class Recorder:
+        classes_ = np.array([0, 1])
+
+        def fit(self, x: pd.DataFrame, y: pd.Series) -> "Recorder":
+            return self
+
+        def predict_proba(self, x: pd.DataFrame) -> np.ndarray:
+            sizes.append(len(x))
+            return np.full((len(x), 2), 0.5)
+
+    n = 2 * PREDICT_ROWS + 5
+    x = pd.DataFrame({"a": np.arange(n, dtype=float)})
+    y = pd.Series(np.arange(n) % 2)
+    tables = Tables(x.iloc[:100], y.iloc[:100], x, [np.arange(100)])
+    result = fit_predict(tables, Pipeline.identity(), "classification", lambda *a, **k: Recorder())
+    assert sizes == [PREDICT_ROWS, PREDICT_ROWS, 5]
+    assert result.pred.shape == (n, 2)
